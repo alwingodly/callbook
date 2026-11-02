@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.Splash" parent="Theme.StockCalls">
+        <item name="android:windowSplashScreenBackground">@color/window_background</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/ic_curve_mark</item>
+        <item name="android:windowSplashScreenIconBackgroundColor">@color/window_background</item>
+    </style>
+</resources>
