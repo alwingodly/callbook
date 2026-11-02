@@ -62,6 +62,7 @@ import com.callbook.journal.domain.NewsLoad
 import com.callbook.journal.domain.newsAge
 import com.callbook.journal.domain.Direction
 import com.callbook.journal.domain.GrowwMath
+import com.callbook.journal.domain.itrTaxOn
 import com.callbook.journal.domain.Mark
 import com.callbook.journal.domain.Prediction
 import com.callbook.journal.domain.ResultKind
@@ -72,6 +73,7 @@ import com.callbook.journal.domain.followSide
 import com.callbook.journal.domain.judgement
 import com.callbook.journal.domain.markToMarket
 import com.callbook.journal.domain.parseAmount
+import com.callbook.journal.domain.boughtResult
 import com.callbook.journal.domain.returnedCash
 import com.callbook.journal.domain.priceText
 import com.callbook.journal.domain.rupees
@@ -238,7 +240,10 @@ private fun DetailBody(
     var notice by remember(prediction.id) { mutableStateOf<String?>(null) }
     val typed = parseAmount(priceText)
     val judged = prediction.judgement()
-    val profitBack = prediction.copy(actualPrice = typed, mark = Mark.WITHDRAW_PROFIT).returnedCash()
+    val profitCall = prediction.copy(actualPrice = typed, mark = Mark.WITHDRAW_PROFIT)
+    val profitBack = profitCall.returnedCash()
+    val profitTax = profitCall.boughtResult()?.netPnl?.let { itrTaxOn(prediction.segment, it) } ?: 0.0
+    val afterTaxBack = profitBack?.minus(profitTax)
     val lossBack = prediction.copy(actualPrice = typed, mark = Mark.WITHDRAW_LOSS).returnedCash()
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
@@ -331,6 +336,8 @@ private fun DetailBody(
         WithdrawButton(
             title = "Sold in profit",
             back = profitBack,
+            tax = profitTax.takeIf { it > 0.0 },
+            afterTax = afterTaxBack.takeIf { profitTax > 0.0 },
             container = Profit,
             onClick = {
                 saveWithdraw(priceText, typed, Mark.WITHDRAW_PROFIT, onSaveOutcome) { message ->
@@ -369,6 +376,8 @@ private fun WithdrawButton(
     back: Double?,
     container: androidx.compose.ui.graphics.Color,
     onClick: () -> Unit,
+    tax: Double? = null,
+    afterTax: Double? = null,
 ) {
     Button(
         onClick = onClick,
@@ -380,6 +389,12 @@ private fun WithdrawButton(
             Text(title, fontWeight = FontWeight.SemiBold)
             if (back != null) {
                 Text("${rupees(back)} back", fontSize = 12.sp)
+            }
+            if (tax != null && afterTax != null) {
+                Text(
+                    text = "ITR tax ${rupees(tax)}  ·  ${rupees(afterTax)} after tax",
+                    fontSize = 12.sp,
+                )
             }
         }
     }

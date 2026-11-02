@@ -2,6 +2,7 @@ package com.callbook.journal
 
 import com.callbook.journal.domain.ListedStock
 import com.callbook.journal.domain.availableCash
+import com.callbook.journal.domain.boughtResult
 import com.callbook.journal.domain.pickListedEquity
 import com.callbook.journal.domain.Direction
 import com.callbook.journal.domain.daySummary
@@ -33,6 +34,7 @@ import com.callbook.journal.domain.StockHeadline
 import com.callbook.journal.domain.headlineDanger
 import com.callbook.journal.domain.WeekShape
 import com.callbook.journal.domain.isMildPause
+import com.callbook.journal.domain.nextAlertAt
 import com.callbook.journal.domain.risingPause
 import com.callbook.journal.domain.shiftTradingDay
 import com.callbook.journal.domain.tradingDay
@@ -43,6 +45,8 @@ import com.callbook.journal.domain.weekShape
 import com.callbook.journal.domain.parseIndexLosers
 import com.callbook.journal.domain.parseLoserBoards
 import com.callbook.journal.domain.publisherLink
+import com.callbook.journal.domain.itrFile
+import com.callbook.journal.domain.itrTaxOn
 import com.callbook.journal.domain.readHeadline
 import com.callbook.journal.domain.verdictSentence
 import org.junit.Assert.assertEquals
@@ -129,6 +133,7 @@ class JournalLogicTest {
             marketPercent = 0.2,
         )
         assertEquals(DipSuggestion.SKIP, bad.suggestion)
+        assertTrue(bad.dangerPercent >= 70)
         val buy = adviseDip(
             symbol = "INFY",
             price = 1170.0,
@@ -171,7 +176,19 @@ class JournalLogicTest {
         )
         assertEquals(DipSuggestion.BUY, deeper.suggestion)
         assertEquals(Danger.LOW, deeper.danger)
+        assertTrue(deeper.dangerPercent < 40)
         assertTrue(deeper.newsNote.contains("not in the news"))
+        val hardMonth = adviseDip(
+            symbol = "INFY",
+            price = 1140.0,
+            changePercent = -3.5,
+            closes = listOf(1160.0, 1180.0, 1175.0),
+            headlines = listOf(HeadlineRead(HeadlineTone.MIXED, 50)),
+            marketPercent = 0.2,
+            monthChange = -9.0,
+        )
+        assertEquals(DipSuggestion.WAIT, hardMonth.suggestion)
+        assertTrue(hardMonth.dangerPercent >= 60)
         val story = StockHeadline("Shares fall after fraud probe", "Mint", "https://example.com", 0L, HeadlineRead(HeadlineTone.NEGATIVE, 90))
         assertEquals("Makes danger high", headlineDanger(story.read))
         assertEquals("Keeps danger low", headlineDanger(HeadlineRead(HeadlineTone.MIXED, 50)))
@@ -446,6 +463,41 @@ class JournalLogicTest {
         )
         assertEquals("SAIL.NS", picked?.symbol)
         assertNull(pickListedEquity(listOf(ListedStock("NIFTYBEES.NS", "Nifty bees", "ETF"))))
+    }
+
+    @Test
+    fun nextAlertIsTheOpenOrOneMinuteLater() {
+        val monday = java.time.LocalDate.of(2026, 11, 2)
+        assertEquals(
+            monday.atTime(9, 15),
+            nextAlertAt(monday.atTime(8, 0)),
+        )
+        assertEquals(
+            monday.atTime(9, 21),
+            nextAlertAt(monday.atTime(9, 20)),
+        )
+        assertEquals(
+            monday.plusDays(1).atTime(9, 15),
+            nextAlertAt(monday.atTime(15, 30)),
+        )
+        assertEquals(
+            monday.plusDays(7).atTime(9, 15),
+            nextAlertAt(monday.plusDays(5).atTime(11, 0)),
+        )
+    }
+
+    @Test
+    fun itrTaxIsTwentyPercentOfDeliveryProfitAfterLosses() {
+        val profit = sample(actual = 110.0, mark = Mark.WITHDRAW_PROFIT)
+        val net = profit.boughtResult()!!.netPnl
+        assertTrue(net > 0.0)
+        assertEquals(kotlin.math.round(net * 0.20 * 100.0) / 100.0, itrTaxOn(Segment.DELIVERY, net), 0.001)
+        assertEquals(0.0, itrTaxOn(Segment.INTRADAY, net), 0.001)
+        val loss = sample(id = 2, actual = 95.0, mark = Mark.WITHDRAW_LOSS, capital = 100_000.0)
+        val file = itrFile(listOf(profit, loss))
+        assertTrue(file.deliveryNet < 0.0)
+        assertEquals(0.0, file.tax, 0.001)
+        assertEquals(file.deliveryNet, file.afterTax, 0.001)
     }
 
     @Test

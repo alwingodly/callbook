@@ -9,7 +9,6 @@ import com.callbook.journal.domain.CapDips
 import com.callbook.journal.domain.CapSize
 import com.callbook.journal.domain.DEEP_DIP_PERCENT
 import com.callbook.journal.domain.DayLoser
-import com.callbook.journal.domain.DipLoad
 import com.callbook.journal.domain.HeadlineRead
 import com.callbook.journal.domain.LoserBoard
 import com.callbook.journal.domain.advisePause
@@ -31,15 +30,27 @@ import java.net.URL
 import java.net.URLEncoder
 import java.time.OffsetDateTime
 import java.time.format.DateTimeFormatter
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.runBlocking
 import org.json.JSONObject
 
 data class SpotQuote(val symbol: String, val price: Double)
+
+data class StrategySlice(
+    val asOf: String,
+    val marketPercent: Double,
+    val checks: List<com.callbook.journal.domain.DipCheck>,
+)
 
 /** Daily candles from the public Yahoo price feed. NSE stocks, then BSE. */
 object PublicQuotes {
     private const val CHART_FRESH_MS = 45_000L
     private const val SPOT_FRESH_MS = 10_000L
     private const val STRATEGY_NEWS_MS = 120_000L
+    private const val INDEX_FRESH_MS = 45_000L
+    private const val COOKIE_FRESH_MS = 300_000L
 
     private val tickers = java.util.concurrent.ConcurrentHashMap<String, ListedStock>()
     private val readyByName = java.util.concurrent.ConcurrentHashMap<String, Pair<Long, ChartLoad.Ready>>()
@@ -47,7 +58,8 @@ object PublicQuotes {
     private val newsByName = java.util.concurrent.ConcurrentHashMap<String, Pair<Long, NewsLoad.Ready>>()
     private val articleByLink = java.util.concurrent.ConcurrentHashMap<String, String>()
     private var losersCache: Pair<Long, LosersLoad.Ready>? = null
-    private var dipCache: Pair<Long, DipLoad.Ready>? = null
+    private val indexBodies = java.util.concurrent.ConcurrentHashMap<String, Pair<Long, String>>()
+    private var nseCookie: Pair<Long, String>? = null
 
     fun peek(query: String, range: String): ChartLoad.Ready? {
         val hit = readyByName[cacheKey(query, range)] ?: return null
@@ -69,18 +81,30 @@ object PublicQuotes {
     }
 
     /**
-     * Large caps down 1% or more, each checked against the last week,
-     * the latest headlines, and the Nifty 100 move. Cached for 90 seconds.
+     * One cap and one list. The morning alert asks only for large dips,
+     * so mid, small, and pause are not fetched until that tab is opened.
      */
-    fun dipScan(fresh: Boolean = false): DipLoad {
-        val cached = dipCache
-        val now = System.currentTimeMillis()
-        if (!fresh && cached != null && now - cached.first < 90_000L) return cached.second
-        val loaded = runCatching { scanDips() }.getOrElse {
-            DipLoad.Unavailable("Dip check is offline")
+    fun scanBoard(cap: CapSize, dips: Boolean, fresh: Boolean = false): StrategySlice? {
+        val cookies = cachedCookies()
+        val body = cachedIndex(cap, cookies, fresh) ?: return null
+        val market = parseIndexMove(body) ?: 0.0
+        val quotes = parseIndexQuotes(body)
+        val checks = if (dips) {
+            quotes
+                .filter { it.changePercent <= DEEP_DIP_PERCENT }
+                .sortedBy { it.changePercent }
+                .take(4)
+                .parallelMap { quote -> adviseOne(quote, market) }
+        } else {
+            quotes
+                .filter { isMildPause(it.changePercent, it.monthChange) }
+                .sortedByDescending { it.monthChange }
+                .take(6)
+                .parallelMap { quote -> advisePauseQuote(quote, market) }
+                .filterNotNull()
+                .take(4)
         }
-        if (loaded is DipLoad.Ready) dipCache = System.currentTimeMillis() to loaded
-        return loaded
+        return StrategySlice(indexTimestamp(body), market, checks)
     }
 
     /** Today's NSE losers. Cached for two minutes. One response holds every board. */
@@ -298,32 +322,25 @@ object PublicQuotes {
         return LosersLoad.Ready(asOf, boards)
     }
 
-    private fun scanDips(): DipLoad {
-        val cookies = runCatching { nseCookies() }.getOrDefault("")
-        var asOf = ""
-        val boards = CapSize.entries.associateWith { cap ->
-            val body = runCatching { indexBody(cap.index, cookies) }.getOrNull()
-                ?: return@associateWith CapDips(0.0, emptyList())
-            if (asOf.isBlank()) asOf = indexTimestamp(body)
-            val market = parseIndexMove(body) ?: 0.0
-            val quotes = parseIndexQuotes(body)
-            val deep = quotes
-                .filter { it.changePercent <= DEEP_DIP_PERCENT }
-                .sortedBy { it.changePercent }
-                .take(4)
-                .map { quote -> adviseOne(quote.asLoser(), market) }
-            val pauses = quotes
-                .filter { isMildPause(it.changePercent, it.monthChange) }
-                .sortedByDescending { it.monthChange }
-                .take(6)
-                .mapNotNull { quote -> advisePauseQuote(quote, market) }
-                .take(4)
-            CapDips(market, deep, pauses)
+    private fun cachedCookies(): String {
+        val hit = nseCookie
+        val now = System.currentTimeMillis()
+        if (hit != null && now - hit.first < COOKIE_FRESH_MS) return hit.second
+        val value = runCatching { nseCookies() }.getOrDefault("")
+        nseCookie = now to value
+        return value
+    }
+
+    private fun cachedIndex(cap: CapSize, cookies: String, fresh: Boolean): String? {
+        val hit = indexBodies[cap.index]
+        val now = System.currentTimeMillis()
+        if (!fresh && hit != null && now - hit.first < INDEX_FRESH_MS) return hit.second
+        val body = runCatching { indexBody(cap.index, cookies) }.getOrNull()
+        if (body != null) {
+            indexBodies[cap.index] = now to body
+            return body
         }
-        if (boards.values.all { it.dips.isEmpty() && it.pauses.isEmpty() } && asOf.isBlank()) {
-            return DipLoad.Unavailable("Dip check is offline")
-        }
-        return DipLoad.Ready(asOf, boards)
+        return hit?.second
     }
 
     private fun advisePauseQuote(
@@ -348,34 +365,30 @@ object PublicQuotes {
             quote.dayLow,
             quote.previousClose,
             stories = stories,
+            monthChange = quote.monthChange,
         )
     }
 
-    private fun com.callbook.journal.domain.IndexQuote.asLoser() = DayLoser(
-        symbol = symbol,
-        price = price,
-        changePercent = changePercent,
-        previousClose = previousClose,
-        volume = "",
-        dayLow = dayLow,
-    )
-
-    private fun adviseOne(loser: DayLoser, market: Double): com.callbook.journal.domain.DipCheck {
-        val closes = runCatching { series("${loser.symbol}.NS", "5d", 6).candles.map { it.close } }
+    private fun adviseOne(
+        quote: com.callbook.journal.domain.IndexQuote,
+        market: Double,
+    ): com.callbook.journal.domain.DipCheck {
+        val closes = runCatching { series("${quote.symbol}.NS", "5d", 6).candles.map { it.close } }
             .getOrDefault(emptyList())
-        val news = runCatching { headlines(loser.symbol, STRATEGY_NEWS_MS) }.getOrNull()
+        val news = runCatching { headlines(quote.symbol, STRATEGY_NEWS_MS) }.getOrNull()
         val stories = (news as? NewsLoad.Ready)?.items.orEmpty()
         val reads: List<HeadlineRead> = stories.map { it.read }
         return adviseDip(
-            loser.symbol,
-            loser.price,
-            loser.changePercent,
+            quote.symbol,
+            quote.price,
+            quote.changePercent,
             closes,
             reads,
             market,
-            loser.dayLow,
-            loser.previousClose,
+            quote.dayLow,
+            quote.previousClose,
             stories = stories,
+            monthChange = quote.monthChange,
         )
     }
 
@@ -469,6 +482,13 @@ object PublicQuotes {
             connection.disconnect()
             throw failure
         }
+    }
+}
+
+private fun <T, R> List<T>.parallelMap(block: (T) -> R): List<R> {
+    if (isEmpty()) return emptyList()
+    return runBlocking(Dispatchers.IO) {
+        map { item -> async { block(item) } }.awaitAll()
     }
 }
 

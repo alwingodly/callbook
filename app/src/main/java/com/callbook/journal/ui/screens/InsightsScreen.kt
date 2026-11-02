@@ -43,7 +43,9 @@ import com.callbook.journal.domain.madeMoney
 import com.callbook.journal.domain.Insights
 import com.callbook.journal.domain.Prediction
 import com.callbook.journal.domain.availableCash
+import com.callbook.journal.domain.ItrFile
 import com.callbook.journal.domain.insightsOf
+import com.callbook.journal.domain.itrFile
 import com.callbook.journal.domain.parseAmount
 import com.callbook.journal.domain.rupees
 import com.callbook.journal.domain.wholePercent
@@ -78,6 +80,7 @@ fun InsightsScreen(
         return
     }
     val insights = remember(predictions) { insightsOf(predictions) }
+    val itr = remember(predictions) { itrFile(predictions) }
     LazyColumn(
         modifier = modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding(),
         contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 96.dp),
@@ -94,6 +97,7 @@ fun InsightsScreen(
         item {
             LedgerBlock(
                 insights = insights,
+                itr = itr,
                 banked = banked,
                 onAddFromBank = onAddFromBank,
                 onReturnToBank = onReturnToBank,
@@ -230,6 +234,7 @@ private fun SplitStat(title: String, decided: Int, successes: Int, modifier: Mod
 @Composable
 private fun LedgerBlock(
     insights: Insights,
+    itr: ItrFile,
     banked: Double,
     onAddFromBank: (Double) -> Unit,
     onReturnToBank: (Double) -> Unit,
@@ -281,6 +286,30 @@ private fun LedgerBlock(
             fontWeight = FontWeight.SemiBold,
             fontSize = 14.sp,
         )
+        Text(
+            text = "ITR tax  ${rupees(itr.tax)}",
+            color = Paper,
+            fontWeight = FontWeight.SemiBold,
+            fontSize = 14.sp,
+        )
+        Text(
+            text = "After tax  ${rupees(itr.afterTax, signed = true)}",
+            color = pnlColor(itr.afterTax),
+            fontWeight = FontWeight.SemiBold,
+            fontSize = 14.sp,
+        )
+        Text(
+            text = "20% of delivery profit after losses. For the ITR. Held under a year.",
+            color = Mist,
+            fontSize = 12.sp,
+        )
+        if (kotlin.math.abs(itr.intradayNet) > 0.5) {
+            Text(
+                text = "Intraday ${rupees(itr.intradayNet, signed = true)} is slab tax, not this 20%.",
+                color = Mist,
+                fontSize = 12.sp,
+            )
+        }
     }
 }
 

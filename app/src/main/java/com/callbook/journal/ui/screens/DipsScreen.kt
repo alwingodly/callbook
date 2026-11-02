@@ -30,10 +30,10 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.Color
@@ -58,14 +58,11 @@ import com.callbook.journal.domain.StockHeadline
 import com.callbook.journal.domain.WeekShape
 import com.callbook.journal.domain.headlineDanger
 import com.callbook.journal.domain.isMarketWeekday
-import com.callbook.journal.domain.inDipWindow
 import com.callbook.journal.domain.inMarketHours
 import com.callbook.journal.domain.newsAge
 import com.callbook.journal.domain.rupees
 import com.callbook.journal.domain.signedPercent
-import com.callbook.journal.ui.StrategyAlert
 import com.callbook.journal.ui.StrategyLink
-import com.callbook.journal.ui.notifyDipBuys
 import com.callbook.journal.ui.openArticle
 import com.callbook.journal.ui.theme.Accent
 import com.callbook.journal.ui.theme.Wash
@@ -90,7 +87,7 @@ private enum class StrategyPlay(val label: String) {
 @Composable
 fun DipsScreen(
     dips: DipLoad,
-    onLoad: (fresh: Boolean) -> Unit,
+    onLoad: (CapSize, Boolean, Boolean) -> Unit,
     focus: StrategyLink? = null,
     onFocusHandled: () -> Unit = {},
     onAdd: (DipCheck) -> Unit = {},
@@ -101,10 +98,11 @@ fun DipsScreen(
     val cap = CapSize.entries.firstOrNull { it.name == capName } ?: CapSize.LARGE
     var playName by rememberSaveable { mutableStateOf(StrategyPlay.DIP.name) }
     val play = StrategyPlay.entries.firstOrNull { it.name == playName } ?: StrategyPlay.DIP
-    val asked = remember { mutableStateListOf<String>() }
     val listState = rememberLazyListState()
     var opened by rememberSaveable { mutableStateOf("") }
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
+    val currentCap = rememberUpdatedState(cap)
+    val currentPlay = rememberUpdatedState(play)
     LaunchedEffect(Unit) {
         if (Build.VERSION.SDK_INT >= 33 &&
             ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
@@ -112,47 +110,41 @@ fun DipsScreen(
         ) {
             permission.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
-        onLoad(false)
+    }
+    LaunchedEffect(cap, play) {
+        onLoad(cap, play == StrategyPlay.DIP, false)
+    }
+    LaunchedEffect(Unit) {
         while (true) {
             delay(60_000)
             val day = LocalDate.now(India)
             val time = LocalTime.now(India)
-            if (isMarketWeekday(day.dayOfWeek) && inMarketHours(time)) onLoad(true)
+            if (!isMarketWeekday(day.dayOfWeek) || !inMarketHours(time)) continue
+            val shownCap = currentCap.value
+            val shownDip = currentPlay.value == StrategyPlay.DIP
+            onLoad(shownCap, shownDip, true)
         }
-    }
-    LaunchedEffect(dips) {
-        val time = LocalTime.now(India)
-        if (!isMarketWeekday(LocalDate.now(India).dayOfWeek) || !inDipWindow(time)) return@LaunchedEffect
-        val ready = dips as? DipLoad.Ready ?: return@LaunchedEffect
-        val buys = ready.boards.flatMap { (cap, board) ->
-            val dips = board.dips.filter { it.suggestion == DipSuggestion.BUY && it.symbol !in asked }
-                .map { StrategyAlert(cap, StrategyPlay.DIP.name, it) }
-            val pauses = board.pauses.filter { it.suggestion == DipSuggestion.BUY && it.symbol !in asked }
-                .map { StrategyAlert(cap, StrategyPlay.PAUSE.name, it) }
-            dips + pauses
-        }
-        if (buys.isEmpty()) return@LaunchedEffect
-        asked.addAll(buys.map { it.dip.symbol })
-        notifyDipBuys(context, buys)
     }
     LaunchedEffect(focus, dips) {
         val target = focus ?: return@LaunchedEffect
         capName = target.cap
         playName = target.play
-        if (dips !is DipLoad.Ready && dips !is DipLoad.Unavailable) return@LaunchedEffect
-        if (dips is DipLoad.Ready) {
-            val board = dips.boards[CapSize.entries.firstOrNull { it.name == target.cap }]
-            val rows = if (target.play == StrategyPlay.PAUSE.name) board?.pauses else board?.dips
-            val index = rows.orEmpty().indexOfFirst { it.symbol.equals(target.symbol, true) }
-            if (index >= 0) {
-                opened = target.symbol
-                listState.animateScrollToItem(index)
-            }
+        if (dips !is DipLoad.Ready) return@LaunchedEffect
+        val board = dips.boards[CapSize.entries.firstOrNull { it.name == target.cap }]
+        val pause = target.play == StrategyPlay.PAUSE.name
+        val loaded = if (pause) board?.pausesLoaded == true else board?.dipsLoaded == true
+        if (!loaded) return@LaunchedEffect
+        val rows = if (pause) board?.pauses else board?.dips
+        val index = rows.orEmpty().indexOfFirst { it.symbol.equals(target.symbol, true) }
+        if (index >= 0) {
+            opened = target.symbol
+            listState.animateScrollToItem(index)
         }
         onFocusHandled()
     }
     val ready = dips as? DipLoad.Ready
     val board = ready?.boards?.get(cap)
+    val playLoaded = if (play == StrategyPlay.DIP) board?.dipsLoaded == true else board?.pausesLoaded == true
     val shown = when (play) {
         StrategyPlay.DIP -> board?.dips.orEmpty()
         StrategyPlay.PAUSE -> board?.pauses.orEmpty()
@@ -169,7 +161,7 @@ fun DipsScreen(
                 )
                 Text(
                     text = "Check",
-                    modifier = Modifier.clickable { onLoad(true) }.padding(vertical = 8.dp),
+                    modifier = Modifier.clickable { onLoad(cap, play == StrategyPlay.DIP, true) }.padding(vertical = 8.dp),
                     color = Accent,
                     fontWeight = FontWeight.Medium,
                     fontSize = 14.sp,
@@ -184,7 +176,7 @@ fun DipsScreen(
                 fontSize = 13.sp,
             )
             Text(
-                text = "Prices update every minute until 3:30. News is from the headline words.",
+                text = "This list updates every minute. Buy alerts run 9:15 to 15:30 on large dips.",
                 modifier = Modifier.padding(top = 2.dp),
                 color = Mist,
                 fontSize = 12.sp,
@@ -217,19 +209,23 @@ fun DipsScreen(
             }
         }
         when {
-            dips is DipLoad.Loading && ready == null -> Row(
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Accent, strokeWidth = 2.dp)
-                Text("  Checking large, mid, and small…", color = Mist, fontSize = 13.sp)
-            }
-            dips is DipLoad.Unavailable && ready == null -> Text(
+            !playLoaded && dips is DipLoad.Unavailable && ready == null -> Text(
                 text = dips.message,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                 color = Mist,
             )
-            ready != null && shown.isEmpty() -> Text(
+            !playLoaded -> Row(
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Accent, strokeWidth = 2.dp)
+                Text(
+                    text = "  Checking ${cap.label.lowercase()} ${play.label.lowercase()}…",
+                    color = Mist,
+                    fontSize = 13.sp,
+                )
+            }
+            shown.isEmpty() -> Text(
                 text = if (play == StrategyPlay.PAUSE) {
                     "No ${cap.label.lowercase()} name is rising and pausing."
                 } else {
@@ -320,8 +316,15 @@ private fun DipRow(dip: DipCheck, expandNews: Boolean, onAdd: (() -> Unit)?) {
                 color = Paper,
                 fontSize = 13.sp,
             )
+            val span = listOfNotNull(
+                dip.weekChange?.let { "Week ${signedPercent(it)}" },
+                dip.monthChange?.let { "Month ${signedPercent(it)}" },
+            ).joinToString("  ·  ")
+            if (span.isNotEmpty()) {
+                Text(text = span, color = Mist, fontSize = 13.sp)
+            }
             Text(
-                text = "Danger ${dip.danger.label}",
+                text = "Danger ${dip.dangerPercent}%",
                 modifier = Modifier.padding(top = 2.dp),
                 color = when (dip.danger) {
                     Danger.LOW -> Profit

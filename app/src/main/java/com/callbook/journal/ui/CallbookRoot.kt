@@ -165,7 +165,7 @@ fun CallbookRoot(
             composable(Routes.Dips) {
                 DipsScreen(
                     dips = dips,
-                    onLoad = viewModel::loadDips,
+                    onLoad = viewModel::loadBoard,
                     focus = strategyLink,
                     onFocusHandled = onStrategyLinkHandled,
                     onAdd = { dip ->

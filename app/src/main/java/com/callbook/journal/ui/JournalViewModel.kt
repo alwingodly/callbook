@@ -10,6 +10,8 @@ import com.callbook.journal.data.AccountStore
 import com.callbook.journal.data.PredictionRepository
 import com.callbook.journal.data.PublicQuotes
 import com.callbook.journal.data.TickerStore
+import com.callbook.journal.domain.CapDips
+import com.callbook.journal.domain.CapSize
 import com.callbook.journal.domain.ChartLoad
 import com.callbook.journal.domain.ChartSpan
 import com.callbook.journal.domain.DipLoad
@@ -36,7 +38,10 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 enum class JournalFilter(val label: String) {
@@ -152,7 +157,8 @@ class JournalViewModel(
 
     private val dipsState = MutableStateFlow<DipLoad>(DipLoad.Idle)
     val dips: StateFlow<DipLoad> = dipsState
-    private var dipsJob: Job? = null
+    private val boardJobs = mutableMapOf<String, Job>()
+    private val boardLock = Mutex()
 
     private var dipDraft: CallDraft? = null
 
@@ -162,12 +168,49 @@ class JournalViewModel(
 
     fun takeDipDraft(): CallDraft? = dipDraft.also { dipDraft = null }
 
-    fun loadDips(fresh: Boolean = false) {
-        if (dipsJob?.isActive == true && !fresh) return
-        dipsJob?.cancel()
-        dipsJob = viewModelScope.launch {
+    /** One cap and one list. A refresh of large dips does not wait for mid, small, or pause. */
+    fun loadBoard(cap: CapSize, dips: Boolean, fresh: Boolean = false) {
+        val key = "${cap.name}:$dips"
+        val running = boardJobs[key]
+        if (running?.isActive == true && !fresh) return
+        running?.cancel()
+        boardJobs[key] = viewModelScope.launch {
             if (dipsState.value !is DipLoad.Ready) dipsState.value = DipLoad.Loading
-            dipsState.value = withContext(Dispatchers.IO) { PublicQuotes.dipScan(fresh) }
+            val slice = withContext(Dispatchers.IO) {
+                runCatching { PublicQuotes.scanBoard(cap, dips, fresh) }.getOrNull()
+            }
+            if (!isActive) return@launch
+            if (slice == null) {
+                if (dipsState.value !is DipLoad.Ready) {
+                    dipsState.value = DipLoad.Unavailable("This list is offline")
+                }
+                return@launch
+            }
+            boardLock.withLock {
+                if (!isActive) return@withLock
+                val ready = dipsState.value as? DipLoad.Ready
+                val boards = ready?.boards.orEmpty().toMutableMap()
+                val previous = boards[cap]
+                boards[cap] = if (dips) {
+                    CapDips(
+                        marketPercent = slice.marketPercent,
+                        dips = slice.checks,
+                        pauses = previous?.pauses.orEmpty(),
+                        dipsLoaded = true,
+                        pausesLoaded = previous?.pausesLoaded == true,
+                    )
+                } else {
+                    CapDips(
+                        marketPercent = slice.marketPercent,
+                        dips = previous?.dips.orEmpty(),
+                        pauses = slice.checks,
+                        dipsLoaded = previous?.dipsLoaded == true,
+                        pausesLoaded = true,
+                    )
+                }
+                val asOf = slice.asOf.ifBlank { ready?.asOf.orEmpty() }
+                dipsState.value = DipLoad.Ready(asOf, boards)
+            }
         }
     }
 

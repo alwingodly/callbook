@@ -2,6 +2,7 @@ package com.callbook.journal.domain
 
 import java.time.DayOfWeek
 import java.time.LocalDate
+import java.time.LocalDateTime
 import java.time.LocalTime
 
 /** A large cap down at least this much today counts as a deep dip. */
@@ -45,6 +46,10 @@ data class DipCheck(
     val headlines: List<StockHeadline> = emptyList(),
     /** How many points of today's fall the headline words can account for. */
     val newsCovers: Double = 0.0,
+    /** Checklist score from the week, the headlines, the market, and the 30-day move. Not a forecast. */
+    val dangerPercent: Int = 0,
+    val weekChange: Double? = null,
+    val monthChange: Double? = null,
 )
 
 enum class CapSize(val label: String, val index: String) {
@@ -57,6 +62,8 @@ data class CapDips(
     val marketPercent: Double,
     val dips: List<DipCheck>,
     val pauses: List<DipCheck> = emptyList(),
+    val dipsLoaded: Boolean = false,
+    val pausesLoaded: Boolean = false,
 )
 
 sealed interface DipLoad {
@@ -69,17 +76,72 @@ sealed interface DipLoad {
     data class Unavailable(val message: String) : DipLoad
 }
 
+/** Morning alerts. Ends at 10:00 so the first hour is not spent on the other lists. */
 fun inDipWindow(time: LocalTime): Boolean =
-    !time.isBefore(LocalTime.of(9, 15)) && time.isBefore(LocalTime.of(9, 45))
+    !time.isBefore(LocalTime.of(9, 15)) && time.isBefore(LocalTime.of(10, 0))
 
 /** Cash market is open. The strategy list can refresh through this whole session. */
 fun inMarketHours(time: LocalTime): Boolean =
     !time.isBefore(LocalTime.of(9, 15)) && time.isBefore(LocalTime.of(15, 30))
 
+/** Next large-dip check. During the session that is one minute ahead. Otherwise the next 9:15. */
+fun nextAlertAt(now: LocalDateTime): LocalDateTime {
+    val day = now.toLocalDate()
+    val time = now.toLocalTime()
+    if (isMarketWeekday(day.dayOfWeek) && time.isBefore(LocalTime.of(9, 15))) {
+        return day.atTime(9, 15)
+    }
+    if (isMarketWeekday(day.dayOfWeek) && inMarketHours(time)) {
+        return now.plusMinutes(1)
+    }
+    var cursor = day.plusDays(1)
+    repeat(7) {
+        if (isMarketWeekday(cursor.dayOfWeek)) return cursor.atTime(9, 15)
+        cursor = cursor.plusDays(1)
+    }
+    return cursor.atTime(9, 15)
+}
+
 /** A strong negative headline can account for about a 3% fall. One negative word, about 1%. */
 fun newsCoversLoss(headlines: List<HeadlineRead>): Double {
     val worst = headlines.filter { it.tone == HeadlineTone.NEGATIVE }.maxByOrNull { it.percent } ?: return 0.0
     return if (worst.percent >= 90) 3.0 else 1.0
+}
+
+/**
+ * Highest check wins. A strong headline or a week that is still falling sits near 80.
+ * This is not the chance the price falls.
+ */
+fun dangerPercent(
+    week: WeekShape,
+    intense: Boolean,
+    mild: Boolean,
+    unexplained: Double,
+    marketDrag: Boolean,
+    monthChange: Double,
+): Int {
+    val fromWeek = when (week) {
+        WeekShape.STILL_FALLING -> 78
+        WeekShape.UNKNOWN -> 50
+        WeekShape.STEADY -> 30
+        WeekShape.SLOWING -> 24
+        WeekShape.RISING -> 18
+    }
+    val fromNews = when {
+        intense -> 86
+        mild && unexplained < 1.0 -> 58
+        mild -> 32
+        else -> 15
+    }
+    val fromMarket = if (marketDrag) 48 else 0
+    val fromMonth = if (monthChange <= -8.0) 62 else 0
+    return maxOf(fromWeek, fromNews, fromMarket, fromMonth).coerceAtMost(90)
+}
+
+/** Percent move from the first close to the last. */
+fun spanChange(closes: List<Double>): Double? {
+    if (closes.size < 2 || closes.first() <= 0.0) return null
+    return (closes.last() - closes.first()) / closes.first() * 100.0
 }
 
 fun headlineDanger(read: HeadlineRead): String = when {
@@ -158,6 +220,7 @@ fun adviseDip(
     dayLow: Double = 0.0,
     previousClose: Double = 0.0,
     stories: List<StockHeadline> = emptyList(),
+    monthChange: Double = 0.0,
 ): DipCheck {
     val week = weekShape(closes)
     val intense = headlines.any { it.tone == HeadlineTone.NEGATIVE && it.percent >= 90 }
@@ -187,6 +250,11 @@ fun adviseDip(
             DipSuggestion.WAIT,
             "The headline already matches this fall. Wait.",
         )
+        monthChange <= -8.0 -> Triple(
+            Danger.MEDIUM,
+            DipSuggestion.WAIT,
+            "The last 30 days are down hard. Wait.",
+        )
         marketDrag -> Triple(
             Danger.MEDIUM,
             DipSuggestion.WAIT,
@@ -198,6 +266,7 @@ fun adviseDip(
             "The fall is larger than the news, and the week is not still sliding. Swing, max ₹1 lakh.",
         )
     }
+    val percent = dangerPercent(week, intense, mild, unexplained, marketDrag, monthChange)
     val limit = if (suggestion == DipSuggestion.SKIP) null else buyLimit(price, dayLow)
     val plan = limit?.let { swingPlan(it.price, dayLow, previousClose) }
     return DipCheck(
@@ -209,6 +278,9 @@ fun adviseDip(
         targetPrice = plan?.target ?: 0.0,
         headlines = stories,
         newsCovers = covers,
+        dangerPercent = percent,
+        weekChange = spanChange(closes),
+        monthChange = monthChange,
     )
 }
 
@@ -279,6 +351,7 @@ fun advisePause(
     dayLow: Double = 0.0,
     previousClose: Double = 0.0,
     stories: List<StockHeadline> = emptyList(),
+    monthChange: Double = 0.0,
 ): DipCheck {
     val intense = headlines.any { it.tone == HeadlineTone.NEGATIVE && it.percent >= 90 }
     val mild = headlines.any { it.tone == HeadlineTone.NEGATIVE }
@@ -286,6 +359,7 @@ fun advisePause(
     val unexplained = ((-changePercent) - covers).coerceAtLeast(0.0)
     val newsNote = newsWorthNote(changePercent, headlines)
     val marketDrag = marketPercent <= -0.8
+    val percent = dangerPercent(WeekShape.RISING, intense, mild, unexplained, marketDrag, monthChange)
     val (danger, suggestion, reason) = when {
         intense -> Triple(Danger.HIGH, DipSuggestion.SKIP, "Bad news is out. Leave this one.")
         mild && unexplained < 1.0 -> Triple(Danger.MEDIUM, DipSuggestion.WAIT, "The headline already matches this fall. Wait.")
@@ -308,5 +382,8 @@ fun advisePause(
         targetPrice = target,
         headlines = stories,
         newsCovers = covers,
+        dangerPercent = percent,
+        weekChange = spanChange(closes),
+        monthChange = monthChange,
     )
 }
