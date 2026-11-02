@@ -162,8 +162,8 @@ class JournalViewModel(
 
     private var dipDraft: CallDraft? = null
 
-    fun stageDip(dip: com.callbook.journal.domain.DipCheck) {
-        dipDraft = CallDraft.fromDip(LocalDate.now().toEpochDay(), dip)
+    fun stageDip(dip: com.callbook.journal.domain.DipCheck, freeCash: Double) {
+        dipDraft = CallDraft.fromDip(LocalDate.now().toEpochDay(), dip, freeCash)
     }
 
     fun takeDipDraft(): CallDraft? = dipDraft.also { dipDraft = null }
@@ -376,10 +376,10 @@ class JournalViewModel(
         viewModelScope.launch { repository.save(prediction) }
     }
 
-    fun saveOutcome(id: Long, actualPrice: Double?, mark: Mark?) {
+    fun saveOutcome(id: Long, actualPrice: Double?, mark: Mark?, manualPnl: Double?) {
         viewModelScope.launch {
             val current = repository.get(id) ?: return@launch
-            val next = current.copy(actualPrice = actualPrice, mark = mark)
+            val next = current.copy(actualPrice = actualPrice, mark = mark, manualPnl = manualPnl)
             repository.save(next)
         }
     }
@@ -387,7 +387,7 @@ class JournalViewModel(
     fun reopen(id: Long) {
         viewModelScope.launch {
             val current = repository.get(id) ?: return@launch
-            repository.save(current.copy(actualPrice = null, mark = null))
+            repository.save(current.copy(actualPrice = null, mark = null, manualPnl = null))
         }
     }
 

@@ -50,6 +50,7 @@ import com.callbook.journal.ui.theme.Paper
 fun LosersScreen(
     losers: LosersLoad,
     onLoad: (fresh: Boolean) -> Unit,
+    showTitle: Boolean = true,
     modifier: Modifier = Modifier,
 ) {
     var boardName by rememberSaveable { mutableStateOf(LoserBoard.LARGE.name) }
@@ -57,29 +58,31 @@ fun LosersScreen(
     LaunchedEffect(Unit) { onLoad(false) }
     val ready = losers as? LosersLoad.Ready
     val rows = ready?.boards?.get(board).orEmpty()
-    Column(modifier = modifier.fillMaxSize().statusBarsPadding()) {
-        Column(modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 8.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+    Column(modifier = modifier.fillMaxSize().then(if (showTitle) Modifier.statusBarsPadding() else Modifier)) {
+        Column(modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = if (showTitle) 8.dp else 0.dp)) {
+            if (showTitle) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "Losers",
+                        color = Paper,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 28.sp,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text(
+                        text = "Refresh",
+                        modifier = Modifier.clickable { onLoad(true) }.padding(vertical = 8.dp),
+                        color = Accent,
+                        fontWeight = FontWeight.Medium,
+                        fontSize = 14.sp,
+                    )
+                }
                 Text(
-                    "Losers",
-                    color = Paper,
-                    fontWeight = FontWeight.SemiBold,
-                    fontSize = 28.sp,
-                    modifier = Modifier.weight(1f),
-                )
-                Text(
-                    text = "Refresh",
-                    modifier = Modifier.clickable { onLoad(true) }.padding(vertical = 8.dp),
-                    color = Accent,
-                    fontWeight = FontWeight.Medium,
-                    fontSize = 14.sp,
+                    text = ready?.asOf?.takeIf { it.isNotBlank() }?.let { "NSE · $it" } ?: "Today's fall, steepest first",
+                    color = Mist,
+                    fontSize = 13.sp,
                 )
             }
-            Text(
-                text = ready?.asOf?.takeIf { it.isNotBlank() }?.let { "NSE · $it" } ?: "Today's fall, steepest first",
-                color = Mist,
-                fontSize = 13.sp,
-            )
             Row(
                 modifier = Modifier.horizontalScroll(rememberScrollState()).padding(top = 8.dp, bottom = 4.dp),
                 horizontalArrangement = Arrangement.spacedBy(18.dp),

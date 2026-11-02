@@ -243,7 +243,7 @@ private fun LedgerBlock(
     val capital = availableCash(banked, insights)
     Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text("Cash", color = Mist, fontSize = 12.sp)
+            Text("Free to trade", color = Mist, fontSize = 12.sp)
             Text(
                 text = rupees(capital, signed = capital < -0.005),
                 color = when {
@@ -256,10 +256,17 @@ private fun LedgerBlock(
                 fontSize = 32.sp,
             )
             Text(
-                text = "In stocks ${rupees(insights.inStocks)}   ·   Bank ${rupees(banked)}",
+                text = "In open trades ${rupees(insights.inStocks)}   ·   Bank ${rupees(banked)}",
                 color = Mist,
                 fontSize = 12.sp,
             )
+            if (insights.taxCut > 0.5) {
+                Text(
+                    text = "Tax cut on sales ${rupees(insights.taxCut)}. Already out of free cash.",
+                    color = Mist,
+                    fontSize = 12.sp,
+                )
+            }
         }
         BankAdd(
             banked = banked,

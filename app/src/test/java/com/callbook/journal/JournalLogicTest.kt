@@ -49,6 +49,7 @@ import com.callbook.journal.domain.parseLoserBoards
 import com.callbook.journal.domain.publisherLink
 import com.callbook.journal.domain.itrFile
 import com.callbook.journal.domain.itrTaxOn
+import com.callbook.journal.domain.taxCutting
 import com.callbook.journal.domain.readHeadline
 import com.callbook.journal.domain.verdictSentence
 import org.junit.Assert.assertEquals
@@ -362,7 +363,7 @@ class JournalLogicTest {
         val insights = insightsOf(listOf(open, profit, loss))
         val cash = availableCash(banked = 5_000.0, insights)
         assertEquals(1_000.0, insights.inStocks, 0.001)
-        assertEquals(5_000.0 - 1_000.0 + insights.netIfBought, cash, 0.05)
+        assertEquals(5_000.0 - 1_000.0 + insights.netIfBought - insights.taxCut, cash, 0.05)
         assertTrue(insights.netIfBought != 0.0)
         val editing = availableCash(banked = 5_000.0, insights, editing = open)
         assertEquals(cash + 1_000.0, editing, 0.05)
@@ -516,6 +517,24 @@ class JournalLogicTest {
     }
 
     @Test
+    fun aLakhTradeLeavesOnlyTheRestAndTaxComesOffThatStock() {
+        val open = sample(capital = 100_000.0)
+        val book = insightsOf(listOf(open))
+        assertEquals(100_000.0, availableCash(200_000.0, book), 0.001)
+        assertEquals(100_000.0, book.inStocks, 0.001)
+        val sold = sample(actual = 110.0, mark = Mark.WITHDRAW_PROFIT, capital = 10_000.0)
+        val net = sold.boughtResult()!!.netPnl
+        val tax = sold.taxCutting()
+        assertEquals(itrTaxOn(Segment.DELIVERY, net), tax, 0.001)
+        val closed = insightsOf(listOf(sold))
+        assertEquals(0.0, closed.inStocks, 0.001)
+        assertEquals(net - tax, availableCash(0.0, closed), 0.001)
+        val typed = sample(id = 3, mark = Mark.WITHDRAW_PROFIT, manual = 500.0)
+        assertEquals(500.0, typed.boughtResult()!!.netPnl, 0.001)
+        assertEquals(100.0, typed.taxCutting(), 0.001)
+    }
+
+    @Test
     fun planWarningCatchesATargetOnTheWrongSide() {
         assertTrue(planWarning(Direction.GAIN, entry = 100.0, target = 90.0, stop = 95.0)!!.contains("target"))
         assertNull(planWarning(Direction.LOSS, entry = 100.0, target = 90.0, stop = 108.0))
@@ -533,6 +552,7 @@ class JournalLogicTest {
         actual: Double? = null,
         mark: Mark? = null,
         epochDay: Long = 20_000,
+        manual: Double? = null,
     ) = Prediction(
         id = id,
         epochDay = epochDay,
@@ -547,5 +567,6 @@ class JournalLogicTest {
         note = "",
         mark = mark,
         createdAt = id,
+        manualPnl = manual,
     )
 }

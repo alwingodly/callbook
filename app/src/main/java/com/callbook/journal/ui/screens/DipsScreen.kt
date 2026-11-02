@@ -106,9 +106,7 @@ fun DipsScreen(
             val day = LocalDate.now(India)
             val time = LocalTime.now(India)
             if (!isMarketWeekday(day.dayOfWeek) || !inMarketHours(time)) continue
-            val shownCap = currentCap.value
-            val shownDip = currentPlay.value == StrategyPlay.DIP
-            onLoad(shownCap, shownDip, true)
+            onLoad(currentCap.value, currentPlay.value == StrategyPlay.DIP, true)
         }
     }
     LaunchedEffect(focus, dips) {
@@ -147,7 +145,9 @@ fun DipsScreen(
                 )
                 Text(
                     text = "Check",
-                    modifier = Modifier.clickable { onLoad(cap, play == StrategyPlay.DIP, true) }.padding(vertical = 8.dp),
+                    modifier = Modifier.clickable {
+                        onLoad(cap, play == StrategyPlay.DIP, true)
+                    }.padding(vertical = 8.dp),
                     color = Accent,
                     fontWeight = FontWeight.Medium,
                     fontSize = 14.sp,

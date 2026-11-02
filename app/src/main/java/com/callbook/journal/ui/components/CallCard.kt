@@ -19,6 +19,7 @@ import com.callbook.journal.domain.Prediction
 import com.callbook.journal.domain.ResultKind
 import com.callbook.journal.domain.Segment
 import com.callbook.journal.domain.boughtResult
+import com.callbook.journal.domain.taxCutting
 import com.callbook.journal.domain.judgement
 import com.callbook.journal.domain.markToMarket
 import com.callbook.journal.domain.rupees
@@ -97,16 +98,28 @@ fun CallCard(
                     fontWeight = FontWeight.Medium,
                     fontSize = 15.sp,
                 )
-                else -> Text(
-                    text = booked?.let { rupees(it, signed = true) } ?: "—",
-                    color = when (judged.kind) {
-                        ResultKind.SUCCESS -> Profit
-                        ResultKind.FAILED -> Loss
-                        else -> Mist
-                    },
-                    fontWeight = FontWeight.Medium,
-                    fontSize = 15.sp,
-                )
+                else -> Column(horizontalAlignment = Alignment.End) {
+                    Text(
+                        text = booked?.let { rupees(it, signed = true) } ?: "—",
+                        color = when (judged.kind) {
+                            ResultKind.SUCCESS -> Profit
+                            ResultKind.FAILED -> Loss
+                            else -> Mist
+                        },
+                        fontWeight = FontWeight.Medium,
+                        fontSize = 15.sp,
+                        textAlign = TextAlign.End,
+                    )
+                    val tax = prediction.taxCutting()
+                    if (tax > 0.5) {
+                        Text(
+                            text = "Tax ${rupees(tax)}",
+                            color = Mist,
+                            fontSize = 12.sp,
+                            textAlign = TextAlign.End,
+                        )
+                    }
+                }
             }
         }
         HorizontalDivider(color = Line, thickness = 1.dp)

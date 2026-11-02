@@ -58,12 +58,14 @@ fun Prediction.verdictSentence(): String? {
     if (judged.kind == ResultKind.OPEN) return null
     val called = if (direction == Direction.GAIN) "a gain" else "a loss"
     if (mark != null) {
-        val back = returnedCash()
+        val tax = taxCutting()
+        val back = returnedCash()?.minus(tax)
+        val home = if (tax > 0.5) "is back after tax." else "is back in your account."
         return when (mark) {
             Mark.WITHDRAW_PROFIT, Mark.CORRECT, Mark.HIT_TARGET, Mark.BEYOND ->
-                "Withdrew with profit. ${rupees(back ?: capital)} is back in your account."
+                "Withdrew with profit. ${rupees(back ?: capital)} $home"
             Mark.WITHDRAW_LOSS, Mark.OPPOSITE, Mark.HIT_STOP ->
-                "Withdrew with loss. ${rupees(back ?: capital)} is back in your account."
+                "Withdrew with loss. ${rupees(back ?: capital)} $home"
             null -> null
         }
     }

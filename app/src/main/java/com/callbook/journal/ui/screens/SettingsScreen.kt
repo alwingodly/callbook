@@ -15,6 +15,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -42,7 +46,7 @@ import com.callbook.journal.ui.theme.setThemeDark
 import com.callbook.journal.ui.theme.themeIsDark
 
 @Composable
-fun SettingsScreen(modifier: Modifier = Modifier) {
+fun SettingsScreen(onBack: () -> Unit = {}, modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
@@ -64,12 +68,17 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
             .padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 96.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Text(
-            text = "Settings",
-            color = Paper,
-            fontWeight = FontWeight.SemiBold,
-            fontSize = 28.sp,
-        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = onBack) {
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Today", tint = Paper)
+            }
+            Text(
+                text = "Settings",
+                color = Paper,
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 28.sp,
+            )
+        }
         Text(
             text = "Appearance and alerts.",
             color = Mist,

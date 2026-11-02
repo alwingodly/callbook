@@ -38,6 +38,7 @@ data class Insights(
     val gainsIfBought: Double,
     val lossesIfBought: Double,
     val netIfFollowed: Double,
+    val taxCut: Double = 0.0,
     val symbols: List<SymbolRecord>,
     val recentFlips: List<FlipRecord>,
 ) {
@@ -67,6 +68,7 @@ fun insightsOf(predictions: List<Prediction>): Insights {
     var gainsBought = 0.0
     var lossesBought = 0.0
     var netFollowed = 0.0
+    var taxCut = 0.0
     val bySymbol = linkedMapOf<String, SymbolAccumulator>()
     val flips = mutableListOf<FlipRecord>()
 
@@ -109,6 +111,7 @@ fun insightsOf(predictions: List<Prediction>): Insights {
             returned += prediction.capital + bought.netPnl
             netBought += bought.netPnl
             netFollowed += followed.netPnl
+            taxCut += itrTaxOn(prediction.segment, bought.netPnl)
             when {
                 bought.netPnl > 0.0 -> {
                     gainsBought += bought.netPnl
@@ -163,6 +166,7 @@ fun insightsOf(predictions: List<Prediction>): Insights {
         gainsIfBought = gainsBought,
         lossesIfBought = lossesBought,
         netIfFollowed = netFollowed,
+        taxCut = taxCut,
         symbols = bySymbol.map { (symbol, bucket) ->
             SymbolRecord(symbol, bucket.decided, bucket.successes, bucket.priced, bucket.netIfBought)
         }.sortedWith(compareByDescending<SymbolRecord> { it.decided }.thenByDescending { it.successes }),
@@ -187,10 +191,13 @@ fun Insights.costMoney(): List<SymbolRecord> =
         .sortedBy { it.netIfBought }
         .take(3)
 
-/** Cash free for the next stock: bank deposits, minus what is still in open trades, plus closed profit and loss. */
+/**
+ * Cash free for the next stock. Open trades lock their amount.
+ * A closed trade puts the profit or loss back, after that stock's tax.
+ */
 fun availableCash(banked: Double, insights: Insights, editing: Prediction? = null): Double {
     val released = if (editing != null && editing.boughtResult() == null) editing.capital else 0.0
-    return banked - insights.inStocks + insights.netIfBought + released
+    return banked - insights.inStocks + insights.netIfBought - insights.taxCut + released
 }
 
 fun Insights.reading(): List<String> {

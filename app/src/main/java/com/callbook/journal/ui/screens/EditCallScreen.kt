@@ -47,6 +47,7 @@ import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.callbook.journal.domain.boughtResult
 import com.callbook.journal.domain.Direction
 import com.callbook.journal.domain.GrowwMath
 import com.callbook.journal.domain.Prediction
@@ -140,10 +141,16 @@ fun EditCallScreen(
                         onClick = {
                             when (val result = current.toPrediction(existing)) {
                                 is DraftResult.Invalid -> error = result.message
-                                is DraftResult.Valid -> if (existing == null && holding(result.prediction.symbol)) {
-                                    error = "${result.prediction.symbol} is already an open swing."
-                                } else {
-                                    onSave(result.prediction)
+                                is DraftResult.Valid -> {
+                                    val stillOpen = existing?.boughtResult() == null
+                                    val wanted = result.prediction.capital
+                                    when {
+                                        existing == null && holding(result.prediction.symbol) ->
+                                            error = "${result.prediction.symbol} is already an open swing."
+                                        stillOpen && wanted > available + 0.5 ->
+                                            error = "Only ${rupees(available.coerceAtLeast(0.0))} is free. This uses ${rupees(wanted)}."
+                                        else -> onSave(result.prediction)
+                                    }
                                 }
                             }
                         },
@@ -346,7 +353,11 @@ private fun CapitalNote(
             fontSize = 13.sp,
         )
         if (short > 0.5) {
-            Text("Short ${rupees(short)} for this stock.", color = Amber, fontSize = 13.sp)
+            Text(
+                text = "Short ${rupees(short)}. This stock can use only the cash left.",
+                color = Amber,
+                fontSize = 13.sp,
+            )
             TextButton(onClick = { onAddFromBank(short) }) {
                 Text("Add ${rupees(short)} from bank", color = Accent)
             }

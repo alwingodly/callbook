@@ -22,4 +22,5 @@ data class PredictionEntity(
     val note: String,
     val mark: String?,
     val createdAt: Long,
+    val manualPnl: Double? = null,
 )

@@ -19,6 +19,7 @@ fun PredictionEntity.toModel(): Prediction = Prediction(
     note = note,
     mark = mark?.let(Mark::valueOf),
     createdAt = createdAt,
+    manualPnl = manualPnl,
 )
 
 fun Prediction.toEntity(): PredictionEntity = PredictionEntity(
@@ -35,4 +36,5 @@ fun Prediction.toEntity(): PredictionEntity = PredictionEntity(
     note = note,
     mark = mark?.name,
     createdAt = createdAt,
+    manualPnl = manualPnl,
 )

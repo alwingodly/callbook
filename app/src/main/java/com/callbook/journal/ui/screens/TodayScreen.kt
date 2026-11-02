@@ -18,6 +18,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
@@ -70,6 +71,7 @@ fun TodayScreen(
     pricesLive: Boolean = false,
     onPrices: () -> Unit = {},
     onNew: () -> Unit = {},
+    onSettings: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val today = LocalDate.now().toEpochDay()
@@ -106,6 +108,9 @@ fun TodayScreen(
                 }
                 IconButton(onClick = onNew) {
                     Icon(Icons.Filled.Add, contentDescription = "New stock", tint = Accent)
+                }
+                IconButton(onClick = onSettings) {
+                    Icon(Icons.Filled.Settings, contentDescription = "Settings", tint = Mist)
                 }
             }
             Row(verticalAlignment = Alignment.CenterVertically) {

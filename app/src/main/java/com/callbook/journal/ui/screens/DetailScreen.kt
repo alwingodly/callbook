@@ -62,7 +62,6 @@ import com.callbook.journal.domain.NewsLoad
 import com.callbook.journal.domain.newsAge
 import com.callbook.journal.domain.Direction
 import com.callbook.journal.domain.GrowwMath
-import com.callbook.journal.domain.itrTaxOn
 import com.callbook.journal.domain.Mark
 import com.callbook.journal.domain.Prediction
 import com.callbook.journal.domain.ResultKind
@@ -73,6 +72,8 @@ import com.callbook.journal.domain.followSide
 import com.callbook.journal.domain.judgement
 import com.callbook.journal.domain.markToMarket
 import com.callbook.journal.domain.parseAmount
+import com.callbook.journal.domain.parseSignedAmount
+import com.callbook.journal.domain.taxCutting
 import com.callbook.journal.domain.boughtResult
 import com.callbook.journal.domain.returnedCash
 import com.callbook.journal.domain.priceText
@@ -115,7 +116,7 @@ fun DetailScreen(
     onHideNews: () -> Unit,
     onBack: () -> Unit,
     onEdit: () -> Unit,
-    onSaveOutcome: (actualPrice: Double?, mark: Mark?) -> Unit,
+    onSaveOutcome: (actualPrice: Double?, mark: Mark?, manualPnl: Double?) -> Unit,
     onReopen: () -> Unit,
     onDelete: () -> Unit,
 ) {
@@ -229,22 +230,29 @@ private fun DetailBody(
     news: NewsLoad,
     newsOn: Boolean,
     onNewsToggle: () -> Unit,
-    onSaveOutcome: (Double?, Mark?) -> Unit,
+    onSaveOutcome: (Double?, Mark?, Double?) -> Unit,
     onReopen: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var priceText by remember(prediction.id, prediction.actualPrice, prediction.mark) {
         mutableStateOf(prediction.actualPrice?.let(::fieldPrice).orEmpty())
     }
+    var resultText by remember(prediction.id, prediction.manualPnl) {
+        mutableStateOf(prediction.manualPnl?.let(::fieldPrice).orEmpty())
+    }
     var error by remember(prediction.id) { mutableStateOf<String?>(null) }
     var notice by remember(prediction.id) { mutableStateOf<String?>(null) }
     val typed = parseAmount(priceText)
+    val manual = if (resultText.isBlank()) null else parseSignedAmount(resultText)
     val judged = prediction.judgement()
-    val profitCall = prediction.copy(actualPrice = typed, mark = Mark.WITHDRAW_PROFIT)
+    val booked = prediction.boughtResult()
+    val profitCall = prediction.copy(actualPrice = typed, mark = Mark.WITHDRAW_PROFIT, manualPnl = manual)
     val profitBack = profitCall.returnedCash()
-    val profitTax = profitCall.boughtResult()?.netPnl?.let { itrTaxOn(prediction.segment, it) } ?: 0.0
+    val profitTax = profitCall.taxCutting()
     val afterTaxBack = profitBack?.minus(profitTax)
-    val lossBack = prediction.copy(actualPrice = typed, mark = Mark.WITHDRAW_LOSS).returnedCash()
+    val lossCall = prediction.copy(actualPrice = typed, mark = Mark.WITHDRAW_LOSS, manualPnl = manual)
+    val lossBack = lossCall.returnedCash()
+    val lossTax = lossCall.taxCutting()
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
             ChartSwitch(on = chartOn, onClick = onChartToggle)
@@ -296,6 +304,19 @@ private fun DetailBody(
             }
         }
         FollowBlock(prediction, typed)
+        booked?.let { result ->
+            val tax = prediction.taxCutting()
+            val after = result.netPnl - tax
+            Panel {
+                Fact("Profit or loss", rupees(result.netPnl, signed = true))
+                if (prediction.manualPnl == null && result.charges > 0.5) {
+                    Fact("Charges", rupees(result.charges))
+                }
+                Fact("Tax", rupees(tax))
+                Fact("After tax", rupees(after, signed = true))
+                Fact("Back in cash", rupees(prediction.capital + after))
+            }
+        }
         prediction.verdictSentence()?.let { sentence ->
             val color = when (judged.kind) {
                 ResultKind.SUCCESS -> Profit
@@ -331,16 +352,48 @@ private fun DetailBody(
                 unfocusedPlaceholderColor = Faint,
             ),
         )
+        OutlinedTextField(
+            value = resultText,
+            onValueChange = {
+                resultText = it
+                error = null
+                notice = null
+            },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("Profit or loss") },
+            placeholder = { Text("Optional, like 850 or -320") },
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
+            shape = RoundedCornerShape(8.dp),
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = Ink,
+                unfocusedBorderColor = Line,
+                focusedLabelColor = Accent,
+                unfocusedLabelColor = Mist,
+                cursorColor = Ink,
+                focusedTextColor = Paper,
+                unfocusedTextColor = Paper,
+                focusedContainerColor = InkCard,
+                unfocusedContainerColor = InkCard,
+                focusedPlaceholderColor = Faint,
+                unfocusedPlaceholderColor = Faint,
+            ),
+        )
+        Text(
+            text = "Leave this blank to use the sell price. A minus is a loss.",
+            color = Faint,
+            fontSize = 12.sp,
+        )
         error?.let { Text(it, color = Loss, fontSize = 13.sp) }
         notice?.let { Text(it, color = Profit, fontSize = 13.sp) }
         WithdrawButton(
             title = "Sold in profit",
-            back = profitBack,
+            back = afterTaxBack,
             tax = profitTax.takeIf { it > 0.0 },
             afterTax = afterTaxBack.takeIf { profitTax > 0.0 },
             container = Profit,
             onClick = {
-                saveWithdraw(priceText, typed, Mark.WITHDRAW_PROFIT, onSaveOutcome) { message ->
+                saveWithdraw(priceText, typed, resultText, manual, Mark.WITHDRAW_PROFIT, onSaveOutcome) { message ->
                     error = message
                     if (message == null) notice = "Sold. Money is back."
                 }
@@ -348,10 +401,12 @@ private fun DetailBody(
         )
         WithdrawButton(
             title = "Sold at a loss",
-            back = lossBack,
+            back = lossBack?.minus(lossTax),
+            tax = lossTax.takeIf { it > 0.0 },
+            afterTax = lossBack?.minus(lossTax)?.takeIf { lossTax > 0.0 },
             container = Loss,
             onClick = {
-                saveWithdraw(priceText, typed, Mark.WITHDRAW_LOSS, onSaveOutcome) { message ->
+                saveWithdraw(priceText, typed, resultText, manual, Mark.WITHDRAW_LOSS, onSaveOutcome) { message ->
                     error = message
                     if (message == null) notice = "Sold. What is left is back."
                 }
@@ -360,6 +415,7 @@ private fun DetailBody(
         if (prediction.judgement().kind != ResultKind.OPEN) {
             TextButton(onClick = {
                 priceText = ""
+                resultText = ""
                 notice = null
                 error = null
                 onReopen()
@@ -403,15 +459,21 @@ private fun WithdrawButton(
 private fun saveWithdraw(
     priceText: String,
     typed: Double?,
+    resultText: String,
+    manual: Double?,
     mark: Mark,
-    onSaveOutcome: (Double?, Mark?) -> Unit,
+    onSaveOutcome: (Double?, Mark?, Double?) -> Unit,
     onResult: (String?) -> Unit,
 ) {
     if (priceText.isNotBlank() && typed == null) {
         onResult("Enter a price like 2456.50.")
         return
     }
-    onSaveOutcome(typed, mark)
+    if (resultText.isNotBlank() && manual == null) {
+        onResult("Enter the profit or loss, like 850 or -320.")
+        return
+    }
+    onSaveOutcome(typed, mark, manual)
     onResult(null)
 }
 

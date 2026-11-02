@@ -53,6 +53,7 @@ data class Prediction(
     val note: String,
     val mark: Mark?,
     val createdAt: Long,
+    val manualPnl: Double? = null,
 )
 
 /** Buy a gain call. Short a loss call only when it is intraday. Stay out of a delivery loss call. */
@@ -91,8 +92,20 @@ fun Prediction.markToMarket(price: Double): PositionResult =
     GrowwMath.atPrice(this, price, TradeSide.LONG)
 
 fun Prediction.boughtResult(): PositionResult? {
-    val exit = moneyExit() ?: return null
-    return GrowwMath.atPrice(this, exit, TradeSide.LONG)
+    val exit = moneyExit()
+    val priced = exit?.let { GrowwMath.atPrice(this, it, TradeSide.LONG) }
+    val typed = manualPnl
+    if (typed != null) {
+        val base = priced ?: GrowwMath.atPrice(this, entryPrice, TradeSide.LONG)
+        return base.copy(netPnl = typed)
+    }
+    return priced
+}
+
+/** Tax cut on this sale. Delivery profit only. */
+fun Prediction.taxCutting(): Double {
+    val net = boughtResult()?.netPnl ?: return 0.0
+    return itrTaxOn(segment, net)
 }
 
 /** Capital put into the buy, plus the profit or minus the loss, back in the account. */

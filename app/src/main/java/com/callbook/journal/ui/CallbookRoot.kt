@@ -7,9 +7,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Notifications
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.TrendingDown
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -32,6 +31,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.repeatOnLifecycle
 import kotlinx.coroutines.delay
 import androidx.navigation.NavGraph.Companion.findStartDestination
+import androidx.navigation.NavHostController
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -61,8 +61,8 @@ private object Routes {
     const val Today = "today"
     const val Journal = "journal"
     const val Insights = "insights"
-    const val Losers = "losers"
     const val Dips = "dips"
+    const val Losers = "losers"
     const val Settings = "settings"
     const val Edit = "edit?id={id}"
     const val Detail = "detail/{id}"
@@ -76,10 +76,9 @@ private data class Tab(val route: String, val label: String, val icon: ImageVect
 private val tabs = listOf(
     Tab(Routes.Today, "Today", Icons.Filled.DateRange),
     Tab(Routes.Journal, "Stocks", Icons.AutoMirrored.Filled.List),
-    Tab(Routes.Losers, "Losers", Icons.Filled.TrendingDown),
     Tab(Routes.Dips, "Strategy", Icons.Filled.Notifications),
+    Tab(Routes.Losers, "Losers", Icons.Filled.KeyboardArrowDown),
     Tab(Routes.Insights, "Money", Icons.Filled.Info),
-    Tab(Routes.Settings, "Settings", Icons.Filled.Settings),
 )
 
 @Composable
@@ -138,7 +137,7 @@ fun CallbookRoot(
     }
     val loading = load is JournalLoad.Loading
     val showChrome = route == Routes.Today || route == Routes.Journal || route == Routes.Insights ||
-        route == Routes.Losers || route == Routes.Dips || route == Routes.Settings
+        route == Routes.Dips || route == Routes.Losers || route == Routes.Settings
     Box(modifier = Modifier.fillMaxSize().background(Canvas)) {
         NavHost(navController = nav, startDestination = Routes.Today, modifier = Modifier.fillMaxSize()) {
             composable(Routes.Today) {
@@ -154,6 +153,7 @@ fun CallbookRoot(
                     pricesLive = pricesLive,
                     onPrices = viewModel::toggleLivePrices,
                     onNew = { nav.navigate(Routes.edit()) },
+                    onSettings = { nav.openRoot(Routes.Settings) },
                 )
             }
             composable(Routes.Journal) {
@@ -169,12 +169,6 @@ fun CallbookRoot(
                     onNew = { nav.navigate(Routes.edit()) },
                 )
             }
-            composable(Routes.Losers) {
-                LosersScreen(
-                    losers = losers,
-                    onLoad = viewModel::loadLosers,
-                )
-            }
             composable(Routes.Dips) {
                 DipsScreen(
                     dips = dips,
@@ -184,14 +178,21 @@ fun CallbookRoot(
                     held = held,
                     onAdd = { dip ->
                         if (!alreadyHolding(predictions, dip.symbol)) {
-                            viewModel.stageDip(dip)
+                            val free = availableCash(banked, insightsOf(predictions))
+                            viewModel.stageDip(dip, free)
                             nav.navigate(Routes.edit())
                         }
                     },
                 )
             }
+            composable(Routes.Losers) {
+                LosersScreen(
+                    losers = losers,
+                    onLoad = viewModel::loadLosers,
+                )
+            }
             composable(Routes.Settings) {
-                SettingsScreen()
+                SettingsScreen(onBack = { nav.openRoot(Routes.Today) })
             }
             composable(Routes.Insights) {
                 InsightsScreen(
@@ -247,7 +248,7 @@ fun CallbookRoot(
                     onHideNews = viewModel::hideNews,
                     onBack = { nav.popBackStack() },
                     onEdit = { nav.navigate(Routes.edit(id)) },
-                    onSaveOutcome = { price, mark -> viewModel.saveOutcome(id, price, mark) },
+                    onSaveOutcome = { price, mark, manual -> viewModel.saveOutcome(id, price, mark, manual) },
                     onReopen = { viewModel.reopen(id) },
                     onDelete = {
                         viewModel.delete(id)
@@ -274,13 +275,7 @@ fun CallbookRoot(
                 tabs.forEach { tab ->
                     NavigationBarItem(
                         selected = route == tab.route,
-                        onClick = {
-                            nav.navigate(tab.route) {
-                                popUpTo(nav.graph.findStartDestination().id) { saveState = true }
-                                launchSingleTop = true
-                                restoreState = true
-                            }
-                        },
+                        onClick = { nav.openRoot(tab.route) },
                         icon = { Icon(tab.icon, contentDescription = tab.label) },
                         label = { Text(tab.label) },
                         colors = NavigationBarItemDefaults.colors(
@@ -294,5 +289,14 @@ fun CallbookRoot(
                 }
             }
         }
+    }
+}
+
+/** Tabs and Settings sit side by side. Today restores Today, not a screen opened on top of it. */
+private fun NavHostController.openRoot(route: String) {
+    navigate(route) {
+        popUpTo(graph.findStartDestination().id) { saveState = true }
+        launchSingleTop = true
+        restoreState = true
     }
 }

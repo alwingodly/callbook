@@ -10,6 +10,15 @@ fun bankReturnAmount(typed: Double?, banked: Double): Double? {
     return typed
 }
 
+/** A typed profit or loss. A minus sign is a loss. Blank is not a number. */
+fun parseSignedAmount(raw: String): Double? {
+    val cleaned = raw.trim().replace(",", "").replace(" ", "").removePrefix("₹").removePrefix("Rs").removePrefix("rs")
+    if (cleaned.isEmpty() || cleaned == "." || cleaned == "-" || cleaned == "-.") return null
+    val value = cleaned.toDoubleOrNull() ?: return null
+    if (!value.isFinite()) return null
+    return value
+}
+
 fun parseAmount(raw: String): Double? {
     val cleaned = raw
         .trim()

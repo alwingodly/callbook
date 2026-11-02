@@ -41,13 +41,14 @@ data class CallDraft(
                 note = note.trim().take(400),
                 mark = existing?.mark,
                 createdAt = existing?.createdAt ?: System.currentTimeMillis(),
+                manualPnl = existing?.manualPnl,
             ),
             warning = planWarning(direction, entryPrice, targetPrice, stopPrice),
         )
     }
 
     companion object {
-        fun fromDip(epochDay: Long, dip: com.callbook.journal.domain.DipCheck) = CallDraft(
+        fun fromDip(epochDay: Long, dip: com.callbook.journal.domain.DipCheck, freeCash: Double) = CallDraft(
             epochDay = epochDay,
             symbol = dip.symbol,
             direction = Direction.GAIN,
@@ -55,7 +56,10 @@ data class CallDraft(
             entry = fieldPrice(dip.limitPrice),
             target = fieldPrice(dip.targetPrice),
             stop = fieldPrice(dip.stopPrice),
-            capital = fieldPrice(100_000.0),
+            capital = run {
+                val spend = minOf(100_000.0, freeCash.coerceAtLeast(0.0))
+                if (spend < 1.0) "" else fieldPrice(spend)
+            },
             note = "Strategy swing. Stop is under today's low.",
         )
 
