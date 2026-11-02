@@ -1,10 +1,13 @@
 package com.callbook.journal.ui
 
+import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.media.AudioAttributes
+import android.media.RingtoneManager
 import android.net.Uri
 import android.os.Build
 import androidx.core.app.NotificationCompat
@@ -15,7 +18,7 @@ import com.callbook.journal.domain.DipCheck
 import com.callbook.journal.domain.rupees
 import com.callbook.journal.domain.signedPercent
 
-private const val DIP_CHANNEL = "dip_alerts"
+private const val DIP_CHANNEL = "dip_buys"
 
 data class StrategyLink(val cap: String, val play: String, val symbol: String)
 
@@ -41,6 +44,26 @@ private fun strategyUri(cap: String, play: String, symbol: String): Uri =
 private fun dipAlertText(dip: DipCheck): String =
     if (dip.limitPrice > 0.0) "${dip.reason} Limit ${rupees(dip.limitPrice)}." else dip.reason
 
+fun ensureDipChannel(context: Context) {
+    if (Build.VERSION.SDK_INT < 26) return
+    val manager = context.getSystemService(NotificationManager::class.java)
+    val sound = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+    val channel = NotificationChannel(DIP_CHANNEL, "Dip alerts", NotificationManager.IMPORTANCE_MAX).apply {
+        description = "A large cap the checklist says to buy"
+        enableVibration(true)
+        vibrationPattern = longArrayOf(0, 280, 120, 280)
+        lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+        setSound(
+            sound,
+            AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_NOTIFICATION)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                .build(),
+        )
+    }
+    manager.createNotificationChannel(channel)
+}
+
 fun notifyDipBuys(context: Context, buys: List<StrategyAlert>) {
     if (buys.isEmpty()) return
     if (Build.VERSION.SDK_INT >= 33 &&
@@ -49,12 +72,7 @@ fun notifyDipBuys(context: Context, buys: List<StrategyAlert>) {
     ) {
         return
     }
-    val manager = context.getSystemService(NotificationManager::class.java)
-    if (Build.VERSION.SDK_INT >= 26) {
-        manager.createNotificationChannel(
-            NotificationChannel(DIP_CHANNEL, "Dip alerts", NotificationManager.IMPORTANCE_HIGH),
-        )
-    }
+    ensureDipChannel(context)
     buys.forEach { alert ->
         val dip = alert.dip
         val open = Intent(
@@ -77,7 +95,8 @@ fun notifyDipBuys(context: Context, buys: List<StrategyAlert>) {
             .setContentText(dipAlertText(dip))
             .setStyle(NotificationCompat.BigTextStyle().bigText(dipAlertText(dip)))
             .setContentIntent(pending)
-            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setPriority(NotificationCompat.PRIORITY_MAX)
+            .setVibrate(longArrayOf(0, 280, 120, 280))
             .setCategory(NotificationCompat.CATEGORY_RECOMMENDATION)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setDefaults(NotificationCompat.DEFAULT_ALL)

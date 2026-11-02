@@ -87,6 +87,7 @@ fun EditCallScreen(
     onAddFromBank: (Double) -> Unit,
     onBack: () -> Unit,
     onSave: (Prediction) -> Unit,
+    holding: (String) -> Boolean = { false },
     prefill: CallDraft? = null,
 ) {
     var draft by remember {
@@ -139,7 +140,11 @@ fun EditCallScreen(
                         onClick = {
                             when (val result = current.toPrediction(existing)) {
                                 is DraftResult.Invalid -> error = result.message
-                                is DraftResult.Valid -> onSave(result.prediction)
+                                is DraftResult.Valid -> if (existing == null && holding(result.prediction.symbol)) {
+                                    error = "${result.prediction.symbol} is already an open swing."
+                                } else {
+                                    onSave(result.prediction)
+                                }
                             }
                         },
                         modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),

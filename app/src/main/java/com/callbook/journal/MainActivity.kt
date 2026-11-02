@@ -1,18 +1,17 @@
 package com.callbook.journal
 
 import android.content.Intent
-import android.graphics.Color
 import android.os.Bundle
 import androidx.activity.ComponentActivity
-import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
-import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.mutableStateOf
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.callbook.journal.ui.CallbookRoot
 import com.callbook.journal.ui.JournalViewModel
 import com.callbook.journal.ui.strategyLink
 import com.callbook.journal.ui.theme.StockCallsTheme
+import com.callbook.journal.ui.theme.applySystemBars
+import com.callbook.journal.ui.theme.loadTheme
 
 class MainActivity : ComponentActivity() {
     private val incoming = mutableStateOf(strategyLink(null))
@@ -21,10 +20,8 @@ class MainActivity : ComponentActivity() {
         setTheme(R.style.Theme_StockCalls)
         super.onCreate(savedInstanceState)
         incoming.value = strategyLink(intent)
-        enableEdgeToEdge(
-            statusBarStyle = SystemBarStyle.light(Color.TRANSPARENT, Color.TRANSPARENT),
-            navigationBarStyle = SystemBarStyle.light(Color.TRANSPARENT, Color.TRANSPARENT),
-        )
+        loadTheme(this)
+        applySystemBars(this)
         val container = (application as CallbookApp).container
         setContent {
             StockCallsTheme {

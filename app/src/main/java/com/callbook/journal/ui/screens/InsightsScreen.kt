@@ -46,6 +46,7 @@ import com.callbook.journal.domain.availableCash
 import com.callbook.journal.domain.ItrFile
 import com.callbook.journal.domain.insightsOf
 import com.callbook.journal.domain.itrFile
+import com.callbook.journal.domain.bankReturnAmount
 import com.callbook.journal.domain.parseAmount
 import com.callbook.journal.domain.rupees
 import com.callbook.journal.domain.wholePercent
@@ -322,11 +323,7 @@ private fun BankAdd(
 ) {
     var text by remember { mutableStateOf("") }
     val typed = parseAmount(text)
-    val backAmount = when {
-        typed == null -> if (banked > 0.5) banked else null
-        typed <= banked + 0.001 -> typed
-        else -> null
-    }
+    val backAmount = bankReturnAmount(typed, banked)
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         if (shortfall > 0.5) {
             TextButton(onClick = { onAdd(shortfall) }, modifier = Modifier.fillMaxWidth()) {

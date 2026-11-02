@@ -7,6 +7,7 @@ import com.callbook.journal.data.TickerStore
 import com.callbook.journal.data.AppDatabase
 import com.callbook.journal.data.PredictionRepository
 import com.callbook.journal.ui.DipAlerts
+import com.callbook.journal.ui.theme.loadTheme
 
 class CallbookApp : Application() {
     lateinit var container: AppContainer
@@ -15,6 +16,7 @@ class CallbookApp : Application() {
     override fun onCreate() {
         super.onCreate()
         container = AppContainer(this)
+        loadTheme(this)
         DipAlerts.start(this)
     }
 }

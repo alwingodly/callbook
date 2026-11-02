@@ -1,9 +1,5 @@
 package com.callbook.journal.ui.screens
 
-import android.Manifest
-import android.os.Build
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -47,7 +43,6 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.core.content.ContextCompat
 import com.callbook.journal.domain.CapSize
 import com.callbook.journal.domain.Danger
 import com.callbook.journal.domain.DipCheck
@@ -90,27 +85,18 @@ fun DipsScreen(
     onLoad: (CapSize, Boolean, Boolean) -> Unit,
     focus: StrategyLink? = null,
     onFocusHandled: () -> Unit = {},
+    held: Set<String> = emptySet(),
     onAdd: (DipCheck) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
-    val context = LocalContext.current
     var capName by rememberSaveable { mutableStateOf(CapSize.LARGE.name) }
     val cap = CapSize.entries.firstOrNull { it.name == capName } ?: CapSize.LARGE
     var playName by rememberSaveable { mutableStateOf(StrategyPlay.DIP.name) }
     val play = StrategyPlay.entries.firstOrNull { it.name == playName } ?: StrategyPlay.DIP
     val listState = rememberLazyListState()
     var opened by rememberSaveable { mutableStateOf("") }
-    val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
     val currentCap = rememberUpdatedState(cap)
     val currentPlay = rememberUpdatedState(play)
-    LaunchedEffect(Unit) {
-        if (Build.VERSION.SDK_INT >= 33 &&
-            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
-            android.content.pm.PackageManager.PERMISSION_GRANTED
-        ) {
-            permission.launch(Manifest.permission.POST_NOTIFICATIONS)
-        }
-    }
     LaunchedEffect(cap, play) {
         onLoad(cap, play == StrategyPlay.DIP, false)
     }
@@ -240,10 +226,12 @@ fun DipsScreen(
                 contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 96.dp),
             ) {
                 items(shown, key = { it.symbol }) { dip ->
+                    val holding = held.any { it.equals(dip.symbol, true) }
                     DipRow(
                         dip = dip,
                         expandNews = opened.equals(dip.symbol, true),
-                        onAdd = if (dip.suggestion != DipSuggestion.SKIP && dip.limitPrice > 0.0) {
+                        holding = holding,
+                        onAdd = if (!holding && dip.suggestion != DipSuggestion.SKIP && dip.limitPrice > 0.0) {
                             { onAdd(dip) }
                         } else {
                             null
@@ -275,7 +263,7 @@ private fun CapTab(label: String, selected: Boolean, onClick: () -> Unit) {
 }
 
 @Composable
-private fun DipRow(dip: DipCheck, expandNews: Boolean, onAdd: (() -> Unit)?) {
+private fun DipRow(dip: DipCheck, expandNews: Boolean, holding: Boolean, onAdd: (() -> Unit)?) {
     var newsOpen by rememberSaveable(dip.symbol) { mutableStateOf(false) }
     LaunchedEffect(expandNews) {
         if (expandNews) newsOpen = true
@@ -358,7 +346,15 @@ private fun DipRow(dip: DipCheck, expandNews: Boolean, onAdd: (() -> Unit)?) {
                         fontSize = 13.sp,
                     )
                 }
-                if (onAdd != null) {
+                if (holding) {
+                    Text(
+                        text = "Already holding",
+                        modifier = Modifier.padding(top = 4.dp),
+                        color = Amber,
+                        fontWeight = FontWeight.Medium,
+                        fontSize = 13.sp,
+                    )
+                } else if (onAdd != null) {
                     Text(
                         text = "Tap to add · ₹1,00,000",
                         modifier = Modifier.padding(top = 4.dp),

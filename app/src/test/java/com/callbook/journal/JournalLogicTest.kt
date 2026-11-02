@@ -1,7 +1,9 @@
 package com.callbook.journal
 
 import com.callbook.journal.domain.ListedStock
+import com.callbook.journal.domain.alreadyHolding
 import com.callbook.journal.domain.availableCash
+import com.callbook.journal.domain.bankReturnAmount
 import com.callbook.journal.domain.boughtResult
 import com.callbook.journal.domain.pickListedEquity
 import com.callbook.journal.domain.Direction
@@ -50,6 +52,7 @@ import com.callbook.journal.domain.itrTaxOn
 import com.callbook.journal.domain.readHeadline
 import com.callbook.journal.domain.verdictSentence
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -463,6 +466,18 @@ class JournalLogicTest {
         )
         assertEquals("SAIL.NS", picked?.symbol)
         assertNull(pickListedEquity(listOf(ListedStock("NIFTYBEES.NS", "Nifty bees", "ETF"))))
+    }
+
+    @Test
+    fun anOpenSwingBlocksASecondBuyAndAnEmptyBankReturn() {
+        val open = sample(symbol = "wipro")
+        assertTrue(alreadyHolding(listOf(open), "WIPRO"))
+        assertFalse(alreadyHolding(listOf(open), "WIPRO", exceptId = open.id))
+        val sold = sample(id = 2, symbol = "WIPRO", actual = 110.0, mark = Mark.WITHDRAW_PROFIT)
+        assertFalse(alreadyHolding(listOf(sold), "WIPRO"))
+        assertNull(bankReturnAmount(null, 50_000.0))
+        assertEquals(12_000.0, bankReturnAmount(12_000.0, 50_000.0)!!, 0.001)
+        assertNull(bankReturnAmount(60_000.0, 50_000.0))
     }
 
     @Test

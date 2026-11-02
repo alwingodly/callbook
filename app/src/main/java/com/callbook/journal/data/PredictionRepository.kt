@@ -9,6 +9,8 @@ class PredictionRepository(private val dao: PredictionDao) {
 
     suspend fun get(id: Long): Prediction? = dao.get(id)?.toModel()
 
+    suspend fun listAll(): List<Prediction> = dao.listAll().map { it.toModel() }
+
     suspend fun save(prediction: Prediction): Long {
         val entity = prediction.toEntity()
         return if (prediction.id == 0L) {

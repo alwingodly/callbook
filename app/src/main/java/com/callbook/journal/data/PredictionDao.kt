@@ -12,6 +12,9 @@ interface PredictionDao {
     @Query("SELECT * FROM predictions ORDER BY epochDay DESC, createdAt DESC")
     fun observeAll(): Flow<List<PredictionEntity>>
 
+    @Query("SELECT * FROM predictions")
+    suspend fun listAll(): List<PredictionEntity>
+
     @Query("SELECT * FROM predictions WHERE id = :id")
     suspend fun get(id: Long): PredictionEntity?
 

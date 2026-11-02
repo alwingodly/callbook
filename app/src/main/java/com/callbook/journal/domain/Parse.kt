@@ -3,6 +3,13 @@ package com.callbook.journal.domain
 import java.util.Locale
 import kotlin.math.abs
 
+/** An amount typed for To bank. Empty stays in the app. More than the banked cash stays put. */
+fun bankReturnAmount(typed: Double?, banked: Double): Double? {
+    if (typed == null || banked <= 0.5) return null
+    if (typed > banked + 0.001) return null
+    return typed
+}
+
 fun parseAmount(raw: String): Double? {
     val cleaned = raw
         .trim()

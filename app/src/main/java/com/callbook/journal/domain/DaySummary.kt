@@ -48,6 +48,15 @@ fun holdingPnl(open: List<Prediction>, prices: Map<String, Double>): Double? {
     return values.takeIf { it.isNotEmpty() }?.sum()
 }
 
+/** An unsold swing in this name. Editing that same call is allowed. */
+fun alreadyHolding(predictions: List<Prediction>, symbol: String, exceptId: Long = 0L): Boolean {
+    val name = symbol.trim()
+    if (name.isEmpty()) return false
+    return predictions.any {
+        it.id != exceptId && it.symbol.equals(name, true) && it.judgement().kind == ResultKind.OPEN
+    }
+}
+
 /** Open calls written before this day. Oldest first, so a stock held the longest stays at the top. */
 fun stillHolding(predictions: List<Prediction>, day: Long): List<Prediction> =
     predictions

@@ -8,6 +8,7 @@ import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.TrendingDown
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
@@ -37,14 +38,18 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import com.callbook.journal.domain.alreadyHolding
 import com.callbook.journal.domain.availableCash
 import com.callbook.journal.domain.insightsOf
+import com.callbook.journal.domain.judgement
+import com.callbook.journal.domain.ResultKind
 import com.callbook.journal.ui.screens.DetailScreen
 import com.callbook.journal.ui.screens.EditCallScreen
 import com.callbook.journal.ui.screens.InsightsScreen
 import com.callbook.journal.ui.screens.DipsScreen
 import com.callbook.journal.ui.screens.JournalScreen
 import com.callbook.journal.ui.screens.LosersScreen
+import com.callbook.journal.ui.screens.SettingsScreen
 import com.callbook.journal.ui.screens.TodayScreen
 import com.callbook.journal.ui.theme.Canvas
 import com.callbook.journal.ui.theme.Ink
@@ -58,6 +63,7 @@ private object Routes {
     const val Insights = "insights"
     const val Losers = "losers"
     const val Dips = "dips"
+    const val Settings = "settings"
     const val Edit = "edit?id={id}"
     const val Detail = "detail/{id}"
 
@@ -73,6 +79,7 @@ private val tabs = listOf(
     Tab(Routes.Losers, "Losers", Icons.Filled.TrendingDown),
     Tab(Routes.Dips, "Strategy", Icons.Filled.Notifications),
     Tab(Routes.Insights, "Money", Icons.Filled.Info),
+    Tab(Routes.Settings, "Settings", Icons.Filled.Settings),
 )
 
 @Composable
@@ -123,9 +130,15 @@ fun CallbookRoot(
     val backStack by nav.currentBackStackEntryAsState()
     val route = backStack?.destination?.route
     val predictions = (load as? JournalLoad.Ready)?.predictions.orEmpty()
+    val held = remember(predictions) {
+        predictions
+            .filter { it.judgement().kind == ResultKind.OPEN }
+            .map { it.symbol.trim().uppercase() }
+            .toSet()
+    }
     val loading = load is JournalLoad.Loading
     val showChrome = route == Routes.Today || route == Routes.Journal || route == Routes.Insights ||
-        route == Routes.Losers || route == Routes.Dips
+        route == Routes.Losers || route == Routes.Dips || route == Routes.Settings
     Box(modifier = Modifier.fillMaxSize().background(Canvas)) {
         NavHost(navController = nav, startDestination = Routes.Today, modifier = Modifier.fillMaxSize()) {
             composable(Routes.Today) {
@@ -168,11 +181,17 @@ fun CallbookRoot(
                     onLoad = viewModel::loadBoard,
                     focus = strategyLink,
                     onFocusHandled = onStrategyLinkHandled,
+                    held = held,
                     onAdd = { dip ->
-                        viewModel.stageDip(dip)
-                        nav.navigate(Routes.edit())
+                        if (!alreadyHolding(predictions, dip.symbol)) {
+                            viewModel.stageDip(dip)
+                            nav.navigate(Routes.edit())
+                        }
                     },
                 )
+            }
+            composable(Routes.Settings) {
+                SettingsScreen()
             }
             composable(Routes.Insights) {
                 InsightsScreen(
@@ -199,6 +218,7 @@ fun CallbookRoot(
                     available = availableCash(banked, insightsOf(predictions), existing),
                     onAddFromBank = viewModel::addFromBank,
                     onBack = { nav.popBackStack() },
+                    holding = { symbol -> alreadyHolding(predictions, symbol, existing?.id ?: 0L) },
                     onSave = { prediction ->
                         viewModel.persist(prediction)
                         viewModel.selectDay(prediction.epochDay)

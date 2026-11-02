@@ -5,49 +5,96 @@ import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.os.PowerManager
+import android.provider.Settings
 import android.util.Log
+import com.callbook.journal.data.AppDatabase
 import com.callbook.journal.data.PublicQuotes
+import com.callbook.journal.data.toModel
 import com.callbook.journal.domain.CapSize
 import com.callbook.journal.domain.DipSuggestion
+import com.callbook.journal.domain.ResultKind
 import com.callbook.journal.domain.inMarketHours
 import com.callbook.journal.domain.isMarketWeekday
+import com.callbook.journal.domain.judgement
 import com.callbook.journal.domain.nextAlertAt
 import java.time.LocalDateTime
 import java.time.ZoneId
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 
 private const val ALERT_PREFS = "callbook_alerts"
 private const val ALERT_DAY = "day"
 private const val ALERT_SYMBOLS = "symbols"
+private const val ALERT_ON = "background"
 private val India = ZoneId.of("Asia/Kolkata")
 
 /** Large-dip buy alerts for the whole session, not only while Strategy is open. */
 object DipAlerts {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val gate = Any()
+    private var loop: Job? = null
+
+    fun enabled(context: Context): Boolean =
+        context.getSharedPreferences(ALERT_PREFS, Context.MODE_PRIVATE).getBoolean(ALERT_ON, true)
+
+    fun phoneKeepsAwake(context: Context): Boolean {
+        val power = context.getSystemService(PowerManager::class.java) ?: return false
+        return power.isIgnoringBatteryOptimizations(context.packageName)
+    }
 
     fun start(context: Context) {
         val app = context.applicationContext
+        ensureDipChannel(app)
+        if (!enabled(app)) return
+        startLoop(app)
         schedule(app)
-        scope.launch {
-            while (isActive) {
-                scan(app)
-                delay(60_000)
-            }
+    }
+
+    /** On starts the check and asks the phone to keep Callbook awake. Off stops the check. */
+    fun setEnabled(context: Context, on: Boolean) {
+        val app = context.applicationContext
+        app.getSharedPreferences(ALERT_PREFS, Context.MODE_PRIVATE).edit().putBoolean(ALERT_ON, on).commit()
+        if (on) {
+            startLoop(app)
+            schedule(app)
+            requestPhoneAwake(context)
+        } else {
+            stopLoop()
+            cancel(app)
         }
     }
 
+    /** Allow or remove the phone's battery exemption. Android asks before either change. */
+    fun openPhoneBattery(context: Context) {
+        val activity = context as? android.app.Activity ?: return
+        val intent = if (phoneKeepsAwake(activity)) {
+            Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+        } else {
+            Intent(
+                Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                Uri.parse("package:${activity.packageName}"),
+            )
+        }
+        runCatching { activity.startActivity(intent) }
+    }
+
     fun scan(context: Context) {
+        if (!enabled(context)) return
         val now = LocalDateTime.now(India)
         if (!isMarketWeekday(now.dayOfWeek) || !inMarketHours(now.toLocalTime())) return
         val slice = runCatching { PublicQuotes.scanBoard(CapSize.LARGE, dips = true, fresh = true) }.getOrNull()
-        val buys = slice?.checks.orEmpty().filter { it.suggestion == DipSuggestion.BUY }
+        val held = openSymbols(context)
+        val buys = slice?.checks.orEmpty().filter {
+            it.suggestion == DipSuggestion.BUY && it.symbol.uppercase() !in held
+        }
         Log.i("Callbook", "dip scan buys=${buys.size} checked=${slice?.checks?.size ?: -1}")
         if (buys.isEmpty()) return
         val fresh = synchronized(gate) {
@@ -72,14 +119,10 @@ object DipAlerts {
     }
 
     fun schedule(context: Context) {
+        if (!enabled(context)) return
         val app = context.applicationContext
         val alarm = app.getSystemService(AlarmManager::class.java) ?: return
-        val pending = PendingIntent.getBroadcast(
-            app,
-            41,
-            Intent(app, DipAlertReceiver::class.java),
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-        )
+        val pending = alarmIntent(app)
         val trigger = nextAlertAt(LocalDateTime.now(India))
             .atZone(India)
             .toInstant()
@@ -92,6 +135,51 @@ object DipAlerts {
                 alarm.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, trigger, pending)
             }
         }
+    }
+
+    private fun startLoop(app: Context) {
+        if (loop?.isActive == true) return
+        loop = scope.launch {
+            while (isActive && enabled(app)) {
+                scan(app)
+                delay(60_000)
+            }
+        }
+    }
+
+    private fun stopLoop() {
+        loop?.cancel()
+        loop = null
+    }
+
+    private fun cancel(context: Context) {
+        val alarm = context.getSystemService(AlarmManager::class.java) ?: return
+        val pending = alarmIntent(context)
+        alarm.cancel(pending)
+        pending.cancel()
+    }
+
+    private fun alarmIntent(context: Context): PendingIntent =
+        PendingIntent.getBroadcast(
+            context,
+            41,
+            Intent(context, DipAlertReceiver::class.java),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+
+    private fun requestPhoneAwake(context: Context) {
+        if (phoneKeepsAwake(context)) return
+        openPhoneBattery(context)
+    }
+
+    private fun openSymbols(context: Context): Set<String> = runBlocking(Dispatchers.IO) {
+        runCatching {
+            AppDatabase.get(context).predictionDao().listAll()
+                .map { it.toModel() }
+                .filter { it.judgement().kind == ResultKind.OPEN }
+                .map { it.symbol.trim().uppercase() }
+                .toSet()
+        }.getOrDefault(emptySet())
     }
 }
 
