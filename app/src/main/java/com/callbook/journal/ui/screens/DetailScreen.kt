@@ -498,7 +498,7 @@ private fun NewsBlock(news: NewsLoad) {
         modifier = Modifier.bringIntoViewRequester(bringNews),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        Text("From the headline words", color = Faint, fontSize = 11.sp)
+        Text("From phrases in the headline", color = Faint, fontSize = 11.sp)
         when (news) {
             NewsLoad.Idle, NewsLoad.Loading -> Row(verticalAlignment = Alignment.CenterVertically) {
                 CircularProgressIndicator(

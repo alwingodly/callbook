@@ -206,9 +206,14 @@ class JournalLogicTest {
         assertEquals(HeadlineTone.POSITIVE, profit.tone)
         assertTrue(profit.percent >= 70)
         assertEquals(HeadlineTone.NEGATIVE, fraud.tone)
+        assertEquals(90, fraud.percent)
         assertEquals(HeadlineTone.MIXED, quiet.tone)
         assertEquals(50, quiet.percent)
-        assertEquals(HeadlineTone.MIXED, readHeadline("Net profit tanks").tone)
+        assertEquals(HeadlineTone.NEGATIVE, readHeadline("Net profit tanks").tone)
+        assertEquals(HeadlineTone.NEGATIVE, readHeadline("Company reports record loss").tone)
+        assertEquals(HeadlineTone.POSITIVE, readHeadline("Profit rises 20 percent").tone)
+        assertEquals(HeadlineTone.MIXED, readHeadline("Court order next week").tone)
+        assertEquals(HeadlineTone.POSITIVE, readHeadline("No fraud found in the audit").tone)
         val body = """["garturlres","https://www.reuters.com/world/india/infosys-falls",1]"""
         assertEquals(
             "https://www.reuters.com/world/india/infosys-falls",
