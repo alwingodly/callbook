@@ -1,6 +1,7 @@
 package com.callbook.journal
 
 import android.content.Intent
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -20,6 +21,7 @@ class MainActivity : ComponentActivity() {
         setTheme(R.style.Theme_StockCalls)
         super.onCreate(savedInstanceState)
         incoming.value = strategyLink(intent)
+        wakeForAlert(incoming.value != null)
         loadTheme(this)
         applySystemBars(this)
         val container = (application as CallbookApp).container
@@ -43,6 +45,15 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        incoming.value = strategyLink(intent)
+        val link = strategyLink(intent)
+        incoming.value = link
+        wakeForAlert(link != null)
+    }
+
+    /** A buy alert turns the screen on. Opening the app yourself does not. */
+    private fun wakeForAlert(alert: Boolean) {
+        if (!alert || Build.VERSION.SDK_INT < 27) return
+        setShowWhenLocked(true)
+        setTurnScreenOn(true)
     }
 }

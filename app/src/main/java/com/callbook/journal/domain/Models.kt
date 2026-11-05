@@ -54,6 +54,7 @@ data class Prediction(
     val mark: Mark?,
     val createdAt: Long,
     val manualPnl: Double? = null,
+    val notStarted: Boolean = false,
 )
 
 /** Buy a gain call. Short a loss call only when it is intraday. Stay out of a delivery loss call. */

@@ -104,7 +104,9 @@ fun insightsOf(predictions: List<Prediction>): Insights {
         val followed = prediction.moneyExit()?.let { price ->
             GrowwMath.atPrice(prediction, price, prediction.followSide())
         }
-        if (bought == null || followed == null) {
+        if (prediction.notStarted && bought == null) {
+            // A plan has not spent its amount.
+        } else if (bought == null || followed == null) {
             inStocks += prediction.capital
         } else {
             priced += 1
@@ -196,7 +198,7 @@ fun Insights.costMoney(): List<SymbolRecord> =
  * A closed trade puts the profit or loss back, after that stock's tax.
  */
 fun availableCash(banked: Double, insights: Insights, editing: Prediction? = null): Double {
-    val released = if (editing != null && editing.boughtResult() == null) editing.capital else 0.0
+    val released = if (editing != null && !editing.notStarted && editing.boughtResult() == null) editing.capital else 0.0
     return banked - insights.inStocks + insights.netIfBought - insights.taxCut + released
 }
 

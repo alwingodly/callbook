@@ -18,7 +18,8 @@ import com.callbook.journal.domain.DipCheck
 import com.callbook.journal.domain.rupees
 import com.callbook.journal.domain.signedPercent
 
-private const val DIP_CHANNEL = "dip_buys"
+private const val DIP_CHANNEL = "dip_buys_alert"
+private const val OLD_DIP_CHANNEL = "dip_buys"
 
 data class StrategyLink(val cap: String, val play: String, val symbol: String)
 
@@ -47,16 +48,19 @@ private fun dipAlertText(dip: DipCheck): String =
 fun ensureDipChannel(context: Context) {
     if (Build.VERSION.SDK_INT < 26) return
     val manager = context.getSystemService(NotificationManager::class.java)
-    val sound = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
-    val channel = NotificationChannel(DIP_CHANNEL, "Dip alerts", NotificationManager.IMPORTANCE_MAX).apply {
-        description = "A large cap the checklist says to buy"
+    runCatching { manager.deleteNotificationChannel(OLD_DIP_CHANNEL) }
+    val sound = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
+    val channel = NotificationChannel(DIP_CHANNEL, "Buy alerts", NotificationManager.IMPORTANCE_MAX).apply {
+        description = "Urgent from 9:15 to 3:15, when a large cap is a buy"
         enableVibration(true)
-        vibrationPattern = longArrayOf(0, 280, 120, 280)
+        vibrationPattern = longArrayOf(0, 400, 150, 400, 150, 600)
         lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+        setBypassDnd(false)
+        enableLights(true)
         setSound(
             sound,
             AudioAttributes.Builder()
-                .setUsage(AudioAttributes.USAGE_NOTIFICATION)
+                .setUsage(AudioAttributes.USAGE_ALARM)
                 .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
                 .build(),
         )
@@ -96,10 +100,12 @@ fun notifyDipBuys(context: Context, buys: List<StrategyAlert>) {
             .setStyle(NotificationCompat.BigTextStyle().bigText(dipAlertText(dip)))
             .setContentIntent(pending)
             .setPriority(NotificationCompat.PRIORITY_MAX)
-            .setVibrate(longArrayOf(0, 280, 120, 280))
-            .setCategory(NotificationCompat.CATEGORY_RECOMMENDATION)
+            .setVibrate(longArrayOf(0, 400, 150, 400, 150, 600))
+            .setCategory(NotificationCompat.CATEGORY_ALARM)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setDefaults(NotificationCompat.DEFAULT_ALL)
+            .setOnlyAlertOnce(false)
+            .setFullScreenIntent(pending, true)
             .setAutoCancel(true)
             .build()
         val id = 8_000 + (dip.symbol.hashCode() and 0x0FFF)

@@ -94,6 +94,7 @@ fun CallbookRoot(
     val chart by viewModel.chart.collectAsStateWithLifecycle()
     val chartRange by viewModel.chartRange.collectAsStateWithLifecycle()
     val nowPrices by viewModel.nowPrices.collectAsStateWithLifecycle()
+    val capBadges by viewModel.capBadges.collectAsStateWithLifecycle()
     val pricesLive by viewModel.pricesLive.collectAsStateWithLifecycle()
     val chartSpot by viewModel.chartSpot.collectAsStateWithLifecycle()
     val news by viewModel.news.collectAsStateWithLifecycle()
@@ -150,6 +151,7 @@ fun CallbookRoot(
                     onJumpToday = viewModel::jumpToToday,
                     onOpen = { id -> nav.navigate(Routes.detail(id)) },
                     nowPrices = nowPrices,
+                    caps = capBadges,
                     pricesLive = pricesLive,
                     onPrices = viewModel::toggleLivePrices,
                     onNew = { nav.navigate(Routes.edit()) },
@@ -164,6 +166,7 @@ fun CallbookRoot(
                     onFilter = viewModel::setFilter,
                     onOpen = { id -> nav.navigate(Routes.detail(id)) },
                     nowPrices = nowPrices,
+                    caps = capBadges,
                     pricesLive = pricesLive,
                     onPrices = viewModel::toggleLivePrices,
                     onNew = { nav.navigate(Routes.edit()) },

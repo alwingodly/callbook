@@ -20,6 +20,7 @@ fun PredictionEntity.toModel(): Prediction = Prediction(
     mark = mark?.let(Mark::valueOf),
     createdAt = createdAt,
     manualPnl = manualPnl,
+    notStarted = notStarted,
 )
 
 fun Prediction.toEntity(): PredictionEntity = PredictionEntity(
@@ -37,4 +38,5 @@ fun Prediction.toEntity(): PredictionEntity = PredictionEntity(
     mark = mark?.name,
     createdAt = createdAt,
     manualPnl = manualPnl,
+    notStarted = notStarted,
 )

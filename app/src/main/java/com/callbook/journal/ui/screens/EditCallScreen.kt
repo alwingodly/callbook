@@ -147,7 +147,7 @@ fun EditCallScreen(
                                     when {
                                         existing == null && holding(result.prediction.symbol) ->
                                             error = "${result.prediction.symbol} is already an open swing."
-                                        stillOpen && wanted > available + 0.5 ->
+                                        stillOpen && !result.prediction.notStarted && wanted > available + 0.5 ->
                                             error = "Only ${rupees(available.coerceAtLeast(0.0))} is free. This uses ${rupees(wanted)}."
                                         else -> onSave(result.prediction)
                                     }
@@ -211,8 +211,22 @@ fun EditCallScreen(
                         draft = current.copy(segment = if (index == 0) Segment.DELIVERY else Segment.INTRADAY)
                     },
                 )
+                ChoiceRow(
+                    options = listOf("Not started", "Bought"),
+                    selectedIndex = if (current.notStarted) 0 else 1,
+                    onSelect = { index -> draft = current.copy(notStarted = index == 0) },
+                )
+                Text(
+                    text = if (current.notStarted) {
+                        "When the price reaches this after you save, it is bought only if the check is still a buy. A price from earlier today does not count. A wait or a skip stays a plan."
+                    } else {
+                        "Bought means the amount is in the stock."
+                    },
+                    color = Mist,
+                    fontSize = 12.sp,
+                )
                 Field(
-                    label = "Price on Groww now",
+                    label = if (current.notStarted) "Buy price" else "Price on Groww now",
                     value = current.entry,
                     onValue = { draft = current.copy(entry = it) },
                     placeholder = "2456.50",

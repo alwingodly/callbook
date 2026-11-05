@@ -102,7 +102,7 @@ fun DipsScreen(
     }
     LaunchedEffect(Unit) {
         while (true) {
-            delay(60_000)
+            delay(20_000)
             val day = LocalDate.now(India)
             val time = LocalTime.now(India)
             if (!isMarketWeekday(day.dayOfWeek) || !inMarketHours(time)) continue
@@ -162,7 +162,7 @@ fun DipsScreen(
                 fontSize = 13.sp,
             )
             Text(
-                text = "This list updates every minute. Buy alerts run 9:15 to 15:30 on large dips.",
+                text = "Prices are the NSE snapshot, about every 20 seconds. From 9:15 to 3:15 a buy alert sounds after the low has held for 3 minutes.",
                 modifier = Modifier.padding(top = 2.dp),
                 color = Mist,
                 fontSize = 12.sp,
@@ -263,7 +263,12 @@ private fun CapTab(label: String, selected: Boolean, onClick: () -> Unit) {
 }
 
 @Composable
-private fun DipRow(dip: DipCheck, expandNews: Boolean, holding: Boolean, onAdd: (() -> Unit)?) {
+private fun DipRow(
+    dip: DipCheck,
+    expandNews: Boolean,
+    holding: Boolean,
+    onAdd: (() -> Unit)?,
+) {
     var newsOpen by rememberSaveable(dip.symbol) { mutableStateOf(false) }
     LaunchedEffect(expandNews) {
         if (expandNews) newsOpen = true

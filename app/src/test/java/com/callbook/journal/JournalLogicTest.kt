@@ -25,6 +25,12 @@ import com.callbook.journal.domain.parseAmount
 import com.callbook.journal.domain.planWarning
 import com.callbook.journal.domain.reading
 import com.callbook.journal.domain.returnedCash
+import com.callbook.journal.domain.shownTarget
+import com.callbook.journal.domain.PricePrint
+import com.callbook.journal.domain.allowsAutoBuy
+import com.callbook.journal.domain.lowAfterAdded
+import com.callbook.journal.domain.settleNotStarted
+import com.callbook.journal.domain.showsCapBadge
 import com.callbook.journal.domain.stillHolding
 import com.callbook.journal.domain.HeadlineTone
 import com.callbook.journal.domain.LoserBoard
@@ -36,6 +42,8 @@ import com.callbook.journal.domain.StockHeadline
 import com.callbook.journal.domain.headlineDanger
 import com.callbook.journal.domain.WeekShape
 import com.callbook.journal.domain.isMildPause
+import com.callbook.journal.domain.carryIfNotStarted
+import com.callbook.journal.domain.fallHasPaused
 import com.callbook.journal.domain.nextAlertAt
 import com.callbook.journal.domain.risingPause
 import com.callbook.journal.domain.shiftTradingDay
@@ -439,6 +447,17 @@ class JournalLogicTest {
             day,
         )
         assertEquals(listOf(1L, 2L), holding.map { it.id })
+        val planned = sample(id = 5, epochDay = day - 1).copy(notStarted = true)
+        assertTrue(stillHolding(listOf(planned), day).isEmpty())
+        assertEquals(0.0, daySummary(listOf(planned)).invested, 0.001)
+        assertNull(holdingPnl(listOf(planned), mapOf("RELIANCE" to 110.0)))
+        assertNull(shownTarget(emptyList()))
+        val open = sample(id = 6)
+        assertEquals(
+            GrowwMath.atPrice(open, open.targetPrice, TradeSide.LONG).netPnl,
+            shownTarget(listOf(open))!!,
+            0.05,
+        )
     }
 
     @Test
@@ -487,6 +506,64 @@ class JournalLogicTest {
     }
 
     @Test
+    fun aPlanMovesToTheNextDayWhenTheBuyPriceIsMissed() {
+        val wednesday = java.time.LocalDate.of(2026, 11, 4)
+        val plan = sample(epochDay = wednesday.toEpochDay()).copy(notStarted = true, entryPrice = 100.0)
+        assertNull(carryIfNotStarted(plan, wednesday, java.time.LocalTime.of(12, 0), dayLow = 110.0))
+        assertEquals(
+            wednesday.plusDays(1).toEpochDay(),
+            carryIfNotStarted(plan, wednesday, java.time.LocalTime.of(15, 30), dayLow = 105.0),
+        )
+        assertNull(carryIfNotStarted(plan, wednesday, java.time.LocalTime.of(15, 30), dayLow = 99.0))
+        val yesterday = plan.copy(epochDay = wednesday.minusDays(1).toEpochDay())
+        assertEquals(
+            wednesday.toEpochDay(),
+            carryIfNotStarted(yesterday, wednesday, java.time.LocalTime.of(12, 0), dayLow = null),
+        )
+    }
+
+    @Test
+    fun aPlanBuysItselfWhenThePriceReachesTheBuyPrice() {
+        val wednesday = java.time.LocalDate.of(2026, 11, 4)
+        val noon = java.time.LocalTime.of(12, 0)
+        val plan = sample(epochDay = wednesday.toEpochDay(), capital = 10_000.0).copy(notStarted = true, entryPrice = 100.0)
+        assertNull(settleNotStarted(plan, wednesday, noon, dayLow = 110.0, freeCash = 50_000.0, clearBuy = true))
+        val bought = settleNotStarted(plan, wednesday, noon, dayLow = 100.0, freeCash = 50_000.0, clearBuy = true)
+        assertEquals(false, bought!!.notStarted)
+        assertEquals(wednesday.toEpochDay(), bought.epochDay)
+        assertNull(settleNotStarted(plan, wednesday, noon, dayLow = 99.0, freeCash = 50_000.0, clearBuy = false))
+        assertNull(settleNotStarted(plan, wednesday, noon, dayLow = 99.0, freeCash = 1_000.0, clearBuy = true))
+        assertTrue(allowsAutoBuy(DipSuggestion.BUY))
+        assertFalse(allowsAutoBuy(DipSuggestion.WAIT))
+        assertFalse(allowsAutoBuy(DipSuggestion.SKIP))
+        assertTrue(showsCapBadge(DipSuggestion.BUY))
+        assertTrue(showsCapBadge(DipSuggestion.WAIT))
+        assertFalse(showsCapBadge(DipSuggestion.SKIP))
+        val savedAt = 12 * 60 * 60 * 1000L
+        val morning = PricePrint(9 * 60 * 60 * 1000L + 30 * 60 * 1000L, 400.0)
+        val later = PricePrint(savedAt + 10 * 60 * 1000L, 398.0)
+        assertEquals(420.0, lowAfterAdded(savedAt, listOf(morning, PricePrint(savedAt + 60_000L, 420.0)))!!, 0.001)
+        assertEquals(398.0, lowAfterAdded(savedAt, listOf(morning, later))!!, 0.001)
+        val missed = settleNotStarted(plan, wednesday, java.time.LocalTime.of(15, 30), dayLow = 105.0, freeCash = 50_000.0, clearBuy = true)
+        assertEquals(true, missed!!.notStarted)
+        assertEquals(wednesday.plusDays(1).toEpochDay(), missed.epochDay)
+    }
+
+    @Test
+    fun aBuyAlertWaitsUntilTheLowStopsFalling() {
+        val start = 1_000_000L
+        val first = fallHasPaused(dayLow = 100.0, price = 100.0, previous = null, nowMillis = start)
+        assertFalse(first.second)
+        val twoMinutes = fallHasPaused(100.0, 101.0, first.first, start + 2 * 60_000L)
+        assertFalse(twoMinutes.second)
+        val held = fallHasPaused(100.0, 101.5, twoMinutes.first, start + 3 * 60_000L)
+        assertTrue(held.second)
+        val newLow = fallHasPaused(99.0, 99.0, twoMinutes.first, start + 3 * 60_000L)
+        assertFalse(newLow.second)
+        assertEquals(99.0, newLow.first.low, 0.001)
+    }
+
+    @Test
     fun nextAlertIsTheOpenOrOneMinuteLater() {
         val monday = java.time.LocalDate.of(2026, 11, 2)
         assertEquals(
@@ -496,6 +573,14 @@ class JournalLogicTest {
         assertEquals(
             monday.atTime(9, 21),
             nextAlertAt(monday.atTime(9, 20)),
+        )
+        assertEquals(
+            monday.atTime(15, 11),
+            nextAlertAt(monday.atTime(15, 10)),
+        )
+        assertEquals(
+            monday.plusDays(1).atTime(9, 15),
+            nextAlertAt(monday.atTime(15, 15)),
         )
         assertEquals(
             monday.plusDays(1).atTime(9, 15),

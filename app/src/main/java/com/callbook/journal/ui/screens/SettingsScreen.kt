@@ -118,7 +118,7 @@ fun SettingsScreen(onBack: () -> Unit = {}, modifier: Modifier = Modifier) {
             )
             Text(
                 text = if (backgroundOn) {
-                    "On keeps the 9:15 check going after you leave."
+                    "On keeps the check going after you leave. From 9:15 to 3:15 a buy alert sounds after the low has held for 3 minutes."
                 } else {
                     "Off stops the check when Callbook is closed."
                 },

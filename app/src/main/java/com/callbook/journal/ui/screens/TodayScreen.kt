@@ -33,6 +33,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.callbook.journal.domain.CapSize
 import com.callbook.journal.domain.DaySummary
 import com.callbook.journal.domain.Prediction
 import com.callbook.journal.domain.ResultKind
@@ -40,12 +41,12 @@ import com.callbook.journal.domain.daySummary
 import com.callbook.journal.domain.holdingPnl
 import com.callbook.journal.domain.judgement
 import com.callbook.journal.domain.rupees
+import com.callbook.journal.domain.shownTarget
 import com.callbook.journal.domain.stillHolding
 import com.callbook.journal.ui.components.CallCard
 import com.callbook.journal.ui.components.LivePriceChip
 import com.callbook.journal.ui.formatShortDay
 import com.callbook.journal.ui.theme.Accent
-import com.callbook.journal.ui.theme.Amber
 import com.callbook.journal.ui.theme.Faint
 import com.callbook.journal.ui.theme.Fraunces
 import com.callbook.journal.ui.theme.InkCard
@@ -68,6 +69,7 @@ fun TodayScreen(
     onJumpToday: () -> Unit,
     onOpen: (Long) -> Unit,
     nowPrices: Map<String, Double> = emptyMap(),
+    caps: Map<String, CapSize> = emptyMap(),
     pricesLive: Boolean = false,
     onPrices: () -> Unit = {},
     onNew: () -> Unit = {},
@@ -79,9 +81,18 @@ fun TodayScreen(
         predictions.filter { it.epochDay == day }.sortedBy { it.createdAt }
     }
     val holding = remember(predictions, day) { stillHolding(predictions, day) }
-    val stillOpen = remember(calls) { calls.filter { it.judgement().kind == ResultKind.OPEN } }
+    val plans = remember(predictions, day) {
+        predictions
+            .filter { it.notStarted && it.epochDay <= day && it.judgement().kind == ResultKind.OPEN }
+            .sortedWith(compareBy<Prediction> { it.epochDay }.thenBy { it.createdAt })
+    }
+    val stillOpen = remember(calls) { calls.filter { !it.notStarted && it.judgement().kind == ResultKind.OPEN } }
     val withdrawn = remember(calls) { calls.filter { it.judgement().kind != ResultKind.OPEN } }
-    val together = holdingPnl(holding + stillOpen, nowPrices)
+    val liveOpen = remember(holding, stillOpen, nowPrices) {
+        (holding + stillOpen).filter { (nowPrices[it.symbol] ?: 0.0) > 0.0 }
+    }
+    val together = holdingPnl(liveOpen, nowPrices)
+    val ifTarget = remember(liveOpen, withdrawn) { shownTarget(liveOpen + withdrawn) }
     val summary = daySummary(calls)
     val date = LocalDate.ofEpochDay(day)
     Column(modifier = modifier.fillMaxSize().statusBarsPadding()) {
@@ -140,25 +151,50 @@ fun TodayScreen(
                 if (holding.isNotEmpty()) {
                     item { SectionLabel("Not sold") }
                     items(holding, key = { "hold-${it.id}" }) { prediction ->
-                        CallCard(prediction = prediction, now = nowPrices[prediction.symbol], onClick = { onOpen(prediction.id) })
+                        CallCard(
+                            prediction = prediction,
+                            now = nowPrices[prediction.symbol],
+                            cap = caps[prediction.symbol.trim().uppercase()],
+                            onClick = { onOpen(prediction.id) },
+                        )
                     }
                 }
                 if (calls.isNotEmpty()) {
-                    item { DayTotals(summary) }
+                    item { DayTotals(summary, ifTarget) }
                 }
                 if (stillOpen.isNotEmpty()) {
                     item { SectionLabel("This day") }
                     items(stillOpen, key = { it.id }) { prediction ->
-                        CallCard(prediction = prediction, now = nowPrices[prediction.symbol], onClick = { onOpen(prediction.id) })
+                        CallCard(
+                            prediction = prediction,
+                            now = nowPrices[prediction.symbol],
+                            cap = caps[prediction.symbol.trim().uppercase()],
+                            onClick = { onOpen(prediction.id) },
+                        )
+                    }
+                }
+                if (plans.isNotEmpty()) {
+                    item { SectionLabel("Not started") }
+                    items(plans, key = { "plan-${it.id}" }) { prediction ->
+                        CallCard(
+                            prediction = prediction,
+                            cap = caps[prediction.symbol.trim().uppercase()],
+                            onClick = { onOpen(prediction.id) },
+                        )
                     }
                 }
                 if (withdrawn.isNotEmpty()) {
                     item { SectionLabel("Withdrawn") }
                     items(withdrawn, key = { "sold-${it.id}" }) { prediction ->
-                        CallCard(prediction = prediction, now = nowPrices[prediction.symbol], onClick = { onOpen(prediction.id) })
+                        CallCard(
+                            prediction = prediction,
+                            now = nowPrices[prediction.symbol],
+                            cap = caps[prediction.symbol.trim().uppercase()],
+                            onClick = { onOpen(prediction.id) },
+                        )
                     }
                 }
-                if (calls.isEmpty()) {
+                if (calls.isEmpty() && plans.isEmpty()) {
                     item {
                         Text(
                             text = if (holding.isEmpty()) "No stocks this day." else "Nothing new this day.",
@@ -198,7 +234,7 @@ private fun SectionLabel(text: String) {
 }
 
 @Composable
-private fun DayTotals(summary: DaySummary) {
+private fun DayTotals(summary: DaySummary, ifTarget: Double?) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -207,7 +243,7 @@ private fun DayTotals(summary: DaySummary) {
     ) {
         Row(modifier = Modifier.fillMaxWidth()) {
             MoneyTotal("Put in", summary.invested, Modifier.weight(1f), signed = false)
-            MoneyTotal("If target", summary.callGain + summary.callLoss, Modifier.weight(1f))
+            MoneyTotal("If target", ifTarget ?: 0.0, Modifier.weight(1f), blank = ifTarget == null)
             MoneyTotal("Sold", if (summary.priced > 0) summary.moved else 0.0, Modifier.weight(1f), blank = summary.priced == 0)
         }
     }

@@ -15,6 +15,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.callbook.journal.domain.CapSize
 import com.callbook.journal.domain.Prediction
 import com.callbook.journal.domain.ResultKind
 import com.callbook.journal.domain.Segment
@@ -36,21 +37,24 @@ fun CallCard(
     prediction: Prediction,
     onClick: () -> Unit,
     now: Double? = null,
+    cap: CapSize? = null,
     modifier: Modifier = Modifier,
 ) {
     val judged = prediction.judgement()
     val days = (LocalDate.now().toEpochDay() - prediction.epochDay).toInt()
     val withdrawn = judged.kind != ResultKind.OPEN
-    val marked = if (!withdrawn && now != null && now > 0.0) prediction.markToMarket(now) else null
+    val marked = if (!prediction.notStarted && !withdrawn && now != null && now > 0.0) prediction.markToMarket(now) else null
     val age = when {
         days <= 0 -> ""
         days == 1 -> " · 1 day"
         else -> " · $days days"
     }
     val subtitle = buildString {
+        if (cap != null) append(cap.label).append(" · ")
         append(if (prediction.segment == Segment.DELIVERY) "Delivery" else "Intraday")
         if (marked != null && marked.quantity > 0) append(" · ${marked.quantity} shares")
-        if (withdrawn) append(" · Withdrawn") else if (marked == null) append(" · Not sold")
+        if (prediction.notStarted && !withdrawn) append(" · Not started")
+        else if (withdrawn) append(" · Withdrawn") else if (marked == null) append(" · Not sold")
         if (!withdrawn) append(age)
     }
     val booked = prediction.boughtResult()?.netPnl

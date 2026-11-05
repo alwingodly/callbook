@@ -7,6 +7,9 @@ import com.callbook.journal.domain.LosersLoad
 import com.callbook.journal.domain.NewsLoad
 import com.callbook.journal.domain.CapDips
 import com.callbook.journal.domain.CapSize
+import com.callbook.journal.domain.ListedRead
+import com.callbook.journal.domain.PricePrint
+import com.callbook.journal.domain.lowAfterAdded
 import com.callbook.journal.domain.DEEP_DIP_PERCENT
 import com.callbook.journal.domain.DayLoser
 import com.callbook.journal.domain.HeadlineRead
@@ -49,7 +52,8 @@ object PublicQuotes {
     private const val CHART_FRESH_MS = 45_000L
     private const val SPOT_FRESH_MS = 10_000L
     private const val STRATEGY_NEWS_MS = 120_000L
-    private const val INDEX_FRESH_MS = 45_000L
+    private const val INDEX_FRESH_MS = 20_000L
+    private const val SLOW_FRESH_MS = 120_000L
     private const val COOKIE_FRESH_MS = 300_000L
 
     private val tickers = java.util.concurrent.ConcurrentHashMap<String, ListedStock>()
@@ -60,6 +64,15 @@ object PublicQuotes {
     private var losersCache: Pair<Long, LosersLoad.Ready>? = null
     private val indexBodies = java.util.concurrent.ConcurrentHashMap<String, Pair<Long, String>>()
     private var nseCookie: Pair<Long, String>? = null
+    private val slowBySymbol = java.util.concurrent.ConcurrentHashMap<String, SlowRead>()
+
+    private data class SlowRead(
+        val closes: List<Double>,
+        val highs: List<Double>,
+        val lows: List<Double>,
+        val stories: List<StockHeadline>,
+        val at: Long,
+    )
 
     fun peek(query: String, range: String): ChartLoad.Ready? {
         val hit = readyByName[cacheKey(query, range)] ?: return null
@@ -78,6 +91,55 @@ object PublicQuotes {
         tickers[name.uppercase()] = hit
         val price = priceOnly(hit.symbol, allowCache) ?: return null
         return SpotQuote(hit.symbol, price)
+    }
+
+    /**
+     * Lowest price traded at or after `afterMillis`.
+     * The morning low is ignored when the plan was saved later.
+     */
+    fun lowSince(symbol: String, afterMillis: Long): Double? {
+        val name = symbol.trim()
+        if (name.isEmpty()) return null
+        val ticker = when {
+            name.endsWith(".NS", true) || name.endsWith(".BO", true) -> name
+            else -> "$name.NS"
+        }
+        return runCatching {
+            val body = get("https://query1.finance.yahoo.com/v8/finance/chart/$ticker?interval=1m&range=1d")
+            val result = JSONObject(body).getJSONObject("chart").getJSONArray("result").getJSONObject(0)
+            val stamps = result.optJSONArray("timestamp")
+            val lows = result.getJSONObject("indicators").getJSONArray("quote").getJSONObject(0).optJSONArray("low")
+            val prints = mutableListOf<PricePrint>()
+            if (stamps != null && lows != null) {
+                val count = minOf(stamps.length(), lows.length())
+                for (i in 0 until count) {
+                    val low = lows.numberAt(i) ?: continue
+                    prints += PricePrint(stamps.optLong(i) * 1000L, low)
+                }
+            }
+            val meta = result.getJSONObject("meta")
+            val market = meta.optDouble("regularMarketPrice")
+            val tradedAt = meta.optLong("regularMarketTime") * 1000L
+            if (market.isFinite() && market > 0.0 && tradedAt > 0L) {
+                prints += PricePrint(tradedAt, market)
+            }
+            lowAfterAdded(afterMillis, prints)
+        }.getOrNull()
+    }
+
+    fun sessionLow(symbol: String): Double? {
+        val name = symbol.trim()
+        if (name.isEmpty()) return null
+        val ticker = when {
+            name.endsWith(".NS", true) || name.endsWith(".BO", true) -> name
+            else -> "$name.NS"
+        }
+        return runCatching {
+            val body = get("https://query1.finance.yahoo.com/v8/finance/chart/$ticker?interval=1d&range=1d")
+            val low = JSONObject(body).getJSONObject("chart").getJSONArray("result").getJSONObject(0)
+                .getJSONObject("meta").optDouble("regularMarketDayLow")
+            low.takeIf { it.isFinite() && it > 0.0 }
+        }.getOrNull()
     }
 
     /**
@@ -105,6 +167,31 @@ object PublicQuotes {
                 .take(4)
         }
         return StrategySlice(indexTimestamp(body), market, checks)
+    }
+
+    /**
+     * Cap, checklist, and today's low for each name that sits in a cap index.
+     * Names outside those indexes are left out.
+     */
+    fun listedReads(symbols: List<String>): Map<String, ListedRead> {
+        val wanted = symbols.map { it.trim().uppercase() }.filter { it.isNotEmpty() }.toSet()
+        if (wanted.isEmpty()) return emptyMap()
+        val cookies = cachedCookies()
+        val hits = mutableListOf<Triple<String, CapSize, com.callbook.journal.domain.IndexQuote>>()
+        val markets = mutableMapOf<CapSize, Double>()
+        for (cap in CapSize.entries) {
+            val body = cachedIndex(cap, cookies, fresh = false) ?: continue
+            markets[cap] = parseIndexMove(body) ?: 0.0
+            for (quote in parseIndexQuotes(body)) {
+                val key = quote.symbol.uppercase()
+                if (key in wanted && hits.none { it.first == key }) hits += Triple(key, cap, quote)
+            }
+        }
+        if (hits.isEmpty()) return emptyMap()
+        return hits.parallelMap { (key, cap, quote) ->
+            val check = adviseOne(quote, markets[cap] ?: 0.0)
+            key to ListedRead(cap, check.suggestion, quote.dayLow)
+        }.toMap()
     }
 
     /** Today's NSE losers. Cached for two minutes. One response holds every board. */
@@ -347,19 +434,16 @@ object PublicQuotes {
         quote: com.callbook.journal.domain.IndexQuote,
         market: Double,
     ): com.callbook.journal.domain.DipCheck? {
-        val bars = runCatching { series("${quote.symbol}.NS", "5d", 6).candles }.getOrNull() ?: return null
-        val lows = bars.map { it.low }
-        val closes = bars.map { it.close }
-        if (!risingPause(lows, closes)) return null
-        val news = runCatching { headlines(quote.symbol, STRATEGY_NEWS_MS) }.getOrNull()
-        val stories = (news as? NewsLoad.Ready)?.items.orEmpty()
+        val slow = slowFor(quote.symbol) ?: return null
+        if (!risingPause(slow.lows, slow.closes)) return null
+        val stories = slow.stories
         val reads: List<HeadlineRead> = stories.map { it.read }
         return advisePause(
             quote.symbol,
             quote.price,
             quote.changePercent,
-            closes,
-            bars.map { it.high },
+            slow.closes,
+            slow.highs,
             reads,
             market,
             quote.dayLow,
@@ -369,14 +453,33 @@ object PublicQuotes {
         )
     }
 
+    /** Week candles and headlines stay for two minutes. The NSE price is read on every pass. */
+    private fun slowFor(symbol: String): SlowRead? {
+        val key = symbol.uppercase()
+        val hit = slowBySymbol[key]
+        val now = System.currentTimeMillis()
+        if (hit != null && now - hit.at < SLOW_FRESH_MS) return hit
+        val bars = runCatching { series("$symbol.NS", "5d", 6).candles }.getOrNull() ?: return hit
+        val news = runCatching { headlines(symbol, STRATEGY_NEWS_MS) }.getOrNull()
+        val stories = (news as? NewsLoad.Ready)?.items.orEmpty()
+        val read = SlowRead(
+            closes = bars.map { it.close },
+            highs = bars.map { it.high },
+            lows = bars.map { it.low },
+            stories = stories,
+            at = now,
+        )
+        slowBySymbol[key] = read
+        return read
+    }
+
     private fun adviseOne(
         quote: com.callbook.journal.domain.IndexQuote,
         market: Double,
     ): com.callbook.journal.domain.DipCheck {
-        val closes = runCatching { series("${quote.symbol}.NS", "5d", 6).candles.map { it.close } }
-            .getOrDefault(emptyList())
-        val news = runCatching { headlines(quote.symbol, STRATEGY_NEWS_MS) }.getOrNull()
-        val stories = (news as? NewsLoad.Ready)?.items.orEmpty()
+        val slow = slowFor(quote.symbol)
+        val closes = slow?.closes.orEmpty()
+        val stories = slow?.stories.orEmpty()
         val reads: List<HeadlineRead> = stories.map { it.read }
         return adviseDip(
             quote.symbol,

@@ -50,6 +50,7 @@ data class DipCheck(
     val dangerPercent: Int = 0,
     val weekChange: Double? = null,
     val monthChange: Double? = null,
+    val dayLow: Double = 0.0,
 )
 
 enum class CapSize(val label: String, val index: String) {
@@ -57,6 +58,13 @@ enum class CapSize(val label: String, val index: String) {
     MID("Mid", "NIFTY MIDCAP 150"),
     SMALL("Small", "NIFTY SMALLCAP 250"),
 }
+
+/** Where a name sits, and whether the latest check would buy, wait, or skip. */
+data class ListedRead(
+    val cap: CapSize,
+    val suggestion: DipSuggestion,
+    val dayLow: Double,
+)
 
 data class CapDips(
     val marketPercent: Double,
@@ -84,6 +92,38 @@ fun inDipWindow(time: LocalTime): Boolean =
 fun inMarketHours(time: LocalTime): Boolean =
     !time.isBefore(LocalTime.of(9, 15)) && time.isBefore(LocalTime.of(15, 30))
 
+/** Buy alerts are urgent from the open until 3:15. */
+fun inAlertHours(time: LocalTime): Boolean =
+    !time.isBefore(LocalTime.of(9, 15)) && !time.isAfter(LocalTime.of(15, 15))
+
+/** A buy alert waits this long after the last new low. */
+const val FALL_QUIET_MINUTES = 3L
+
+data class FallWatch(val low: Double, val quietSinceMillis: Long)
+
+/**
+ * A buy alert waits until today's low has stopped falling.
+ * The first look only starts the wait. A cheaper low starts it again.
+ */
+fun fallHasPaused(
+    dayLow: Double,
+    price: Double,
+    previous: FallWatch?,
+    nowMillis: Long,
+    pauseMillis: Long = FALL_QUIET_MINUTES * 60_000L,
+): Pair<FallWatch, Boolean> {
+    val low = when {
+        dayLow > 0.0 -> dayLow
+        price > 0.0 -> price
+        else -> previous?.low ?: 0.0
+    }
+    if (low <= 0.0) return FallWatch(0.0, nowMillis) to false
+    val madeNewLow = previous == null || previous.low <= 0.0 || low < previous.low - 0.009
+    val watch = if (madeNewLow) FallWatch(low, nowMillis) else previous.copy(low = minOf(previous.low, low))
+    val ready = !madeNewLow && nowMillis - watch.quietSinceMillis >= pauseMillis
+    return watch to ready
+}
+
 /** Next large-dip check. During the session that is one minute ahead. Otherwise the next 9:15. */
 fun nextAlertAt(now: LocalDateTime): LocalDateTime {
     val day = now.toLocalDate()
@@ -91,7 +131,7 @@ fun nextAlertAt(now: LocalDateTime): LocalDateTime {
     if (isMarketWeekday(day.dayOfWeek) && time.isBefore(LocalTime.of(9, 15))) {
         return day.atTime(9, 15)
     }
-    if (isMarketWeekday(day.dayOfWeek) && inMarketHours(time)) {
+    if (isMarketWeekday(day.dayOfWeek) && time.isBefore(LocalTime.of(15, 15)) && inAlertHours(time)) {
         return now.plusMinutes(1)
     }
     var cursor = day.plusDays(1)
@@ -179,6 +219,74 @@ fun tradingDay(date: LocalDate): LocalDate {
     var day = date
     while (!isMarketWeekday(day.dayOfWeek)) day = day.minusDays(1)
     return day
+}
+
+/** One price print. `atMillis` is when that low was traded. */
+data class PricePrint(val atMillis: Long, val low: Double)
+
+/**
+ * The cheapest price traded at or after the plan was saved.
+ * A low from earlier the same morning is left out.
+ */
+fun lowAfterAdded(addedAt: Long, prints: List<PricePrint>): Double? =
+    prints.mapNotNull { print ->
+        if (print.atMillis < addedAt || print.low <= 0.0) null else print.low
+    }.minOrNull()
+
+/** A wait is a trade-off. A skip is bad. Only a buy may purchase itself. */
+fun allowsAutoBuy(suggestion: DipSuggestion?): Boolean = suggestion == DipSuggestion.BUY
+
+/** A skip is a major trade-off, so the cap badge stays off that row. */
+fun showsCapBadge(suggestion: DipSuggestion?): Boolean = suggestion != DipSuggestion.SKIP
+
+/**
+ * A plan buys itself once today's low reaches the buy price, the cash is free,
+ * and the check is still a buy. A wait or a skip stays a plan.
+ * Returns null when nothing about the plan changes.
+ */
+fun settleNotStarted(
+    call: Prediction,
+    today: LocalDate,
+    now: LocalTime,
+    dayLow: Double?,
+    freeCash: Double,
+    clearBuy: Boolean,
+): Prediction? {
+    if (!call.notStarted || call.mark != null) return null
+    val day = LocalDate.ofEpochDay(call.epochDay)
+    if (day > today) return null
+    val reached = dayLow != null && dayLow > 0.0 && dayLow <= call.entryPrice + 0.009
+    val affordable = call.capital >= 1.0 && call.capital <= freeCash + 0.5
+    if (reached && affordable && clearBuy) {
+        return call.copy(notStarted = false, epochDay = tradingDay(today).toEpochDay())
+    }
+    val next = carryIfNotStarted(call, today, now, dayLow) ?: return null
+    return call.copy(epochDay = next)
+}
+
+/**
+ * A plan that never traded. After the session, if the price stayed above the buy price,
+ * the plan moves to the next weekday. A past plan moves to today while the market is open.
+ */
+fun carryIfNotStarted(
+    call: Prediction,
+    today: LocalDate,
+    now: LocalTime,
+    dayLow: Double?,
+): Long? {
+    if (!call.notStarted || call.mark != null) return null
+    val day = LocalDate.ofEpochDay(call.epochDay)
+    val afterClose = !now.isBefore(LocalTime.of(15, 30))
+    if (day > today) return null
+    if (day == today && !afterClose) return null
+    val touched = day == today && dayLow != null && dayLow > 0.0 && dayLow <= call.entryPrice + 0.009
+    if (touched) return null
+    val next = if (day < today) {
+        if (afterClose && tradingDay(today) == today) shiftTradingDay(today, 1) else tradingDay(today)
+    } else {
+        shiftTradingDay(day, 1)
+    }
+    return next.toEpochDay().takeIf { it != call.epochDay }
 }
 
 /** Steps across weekdays only. Monday minus one is Friday. */
@@ -281,6 +389,7 @@ fun adviseDip(
         dangerPercent = percent,
         weekChange = spanChange(closes),
         monthChange = monthChange,
+        dayLow = dayLow,
     )
 }
 
@@ -385,5 +494,6 @@ fun advisePause(
         dangerPercent = percent,
         weekChange = spanChange(closes),
         monthChange = monthChange,
+        dayLow = dayLow,
     )
 }

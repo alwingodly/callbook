@@ -15,6 +15,12 @@ import com.callbook.journal.domain.CapSize
 import com.callbook.journal.domain.ChartLoad
 import com.callbook.journal.domain.ChartSpan
 import com.callbook.journal.domain.DipLoad
+import com.callbook.journal.domain.ListedRead
+import com.callbook.journal.domain.allowsAutoBuy
+import com.callbook.journal.domain.availableCash
+import com.callbook.journal.domain.insightsOf
+import com.callbook.journal.domain.settleNotStarted
+import com.callbook.journal.domain.showsCapBadge
 import com.callbook.journal.domain.isMarketWeekday
 import com.callbook.journal.domain.shiftTradingDay
 import com.callbook.journal.domain.tradingDay
@@ -25,6 +31,8 @@ import com.callbook.journal.domain.Prediction
 import com.callbook.journal.domain.ResultKind
 import com.callbook.journal.domain.judgement
 import java.time.LocalDate
+import java.time.LocalDateTime
+import java.time.ZoneId
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
@@ -37,7 +45,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -343,10 +353,47 @@ class JournalViewModel(
         }
     }
 
+    private val capBadgeState = MutableStateFlow<Map<String, CapSize>>(emptyMap())
+
+    /** Large, mid, or small for a name that is not a skip. */
+    val capBadges: StateFlow<Map<String, CapSize>> = capBadgeState
+
     init {
         val raw = savedState.get<Long>("day") ?: LocalDate.now().toEpochDay()
         val date = LocalDate.ofEpochDay(raw)
         if (!isMarketWeekday(date.dayOfWeek)) savedState["day"] = tradingDay(date).toEpochDay()
+        viewModelScope.launch {
+            while (isActive) {
+                watchPlans()
+                delay(60_000)
+            }
+        }
+    }
+
+    /** Refresh cap badges, then buy a plan only when the check is still a buy. */
+    private suspend fun watchPlans() {
+        val all = repository.listAll()
+        val reads = withContext(Dispatchers.IO) { PublicQuotes.listedReads(all.map { it.symbol }) }
+        capBadgeState.value = reads.filterValues { showsCapBadge(it.suggestion) }.mapValues { it.value.cap }
+        val plans = all.filter { it.notStarted && it.mark == null }
+            .sortedWith(compareBy<Prediction> { it.epochDay }.thenBy { it.createdAt })
+        if (plans.isEmpty()) return
+        val now = LocalDateTime.now(ZoneId.of("Asia/Kolkata"))
+        var free = availableCash(account.observe().value, insightsOf(all))
+        for (call in plans) {
+            val read: ListedRead? = reads[call.symbol.trim().uppercase()]
+            val low = withContext(Dispatchers.IO) { PublicQuotes.lowSince(call.symbol, call.createdAt) }
+            val next = settleNotStarted(
+                call,
+                now.toLocalDate(),
+                now.toLocalTime(),
+                low,
+                free,
+                clearBuy = allowsAutoBuy(read?.suggestion),
+            ) ?: continue
+            repository.save(next)
+            if (!next.notStarted) free -= next.capital
+        }
     }
 
     val selectedEpochDay = savedState.getStateFlow("day", tradingDay(LocalDate.now()).toEpochDay())

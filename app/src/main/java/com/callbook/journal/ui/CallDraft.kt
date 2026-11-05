@@ -18,6 +18,7 @@ data class CallDraft(
     val stop: String,
     val capital: String,
     val note: String,
+    val notStarted: Boolean = false,
 ) {
     fun toPrediction(existing: Prediction?): DraftResult {
         val cleanSymbol = normalizeSymbol(symbol)
@@ -42,6 +43,7 @@ data class CallDraft(
                 mark = existing?.mark,
                 createdAt = existing?.createdAt ?: System.currentTimeMillis(),
                 manualPnl = existing?.manualPnl,
+                notStarted = notStarted,
             ),
             warning = planWarning(direction, entryPrice, targetPrice, stopPrice),
         )
@@ -85,6 +87,7 @@ data class CallDraft(
             stop = fieldPrice(prediction.stopPrice),
             capital = fieldPrice(prediction.capital),
             note = prediction.note,
+            notStarted = prediction.notStarted,
         )
     }
 }

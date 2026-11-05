@@ -24,6 +24,7 @@ fun daySummary(calls: List<Prediction>): DaySummary {
     val matched = mutableListOf<String>()
     val fell = mutableListOf<String>()
     calls.forEach { call ->
+        if (call.notStarted && call.boughtResult() == null) return@forEach
         invested += call.capital
         val atTarget = GrowwMath.atPrice(call, call.targetPrice, TradeSide.LONG).netPnl
         if (call.direction == Direction.GAIN) callGain += atTarget else callLoss += atTarget
@@ -39,10 +40,19 @@ fun daySummary(calls: List<Prediction>): DaySummary {
     return DaySummary(invested, callGain, callLoss, gain, loss, matched, fell, priced)
 }
 
+/**
+ * Target result for rows that already show a profit or a loss.
+ * A plain capital row is left out, so the total stays blank until that row is colored.
+ */
+fun shownTarget(calls: List<Prediction>): Double? {
+    if (calls.isEmpty()) return null
+    return calls.sumOf { GrowwMath.atPrice(it, it.targetPrice, TradeSide.LONG).netPnl }
+}
+
 /** Profit and loss, after charges, of the unsold buys that have a public price. */
 fun holdingPnl(open: List<Prediction>, prices: Map<String, Double>): Double? {
     val values = open.mapNotNull { call ->
-        if (call.judgement().kind != ResultKind.OPEN) return@mapNotNull null
+        if (call.notStarted || call.judgement().kind != ResultKind.OPEN) return@mapNotNull null
         prices[call.symbol]?.let { call.markToMarket(it).netPnl }
     }
     return values.takeIf { it.isNotEmpty() }?.sum()
@@ -60,7 +70,7 @@ fun alreadyHolding(predictions: List<Prediction>, symbol: String, exceptId: Long
 /** Open calls written before this day. Oldest first, so a stock held the longest stays at the top. */
 fun stillHolding(predictions: List<Prediction>, day: Long): List<Prediction> =
     predictions
-        .filter { it.epochDay < day && it.judgement().kind == ResultKind.OPEN }
+        .filter { it.epochDay < day && !it.notStarted && it.judgement().kind == ResultKind.OPEN }
         .sortedWith(compareBy<Prediction> { it.epochDay }.thenBy { it.createdAt })
 
 private fun addName(names: MutableList<String>, symbol: String) {

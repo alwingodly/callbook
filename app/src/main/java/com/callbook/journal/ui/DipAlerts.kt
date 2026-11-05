@@ -14,8 +14,10 @@ import com.callbook.journal.data.PublicQuotes
 import com.callbook.journal.data.toModel
 import com.callbook.journal.domain.CapSize
 import com.callbook.journal.domain.DipSuggestion
+import com.callbook.journal.domain.FallWatch
 import com.callbook.journal.domain.ResultKind
-import com.callbook.journal.domain.inMarketHours
+import com.callbook.journal.domain.fallHasPaused
+import com.callbook.journal.domain.inAlertHours
 import com.callbook.journal.domain.isMarketWeekday
 import com.callbook.journal.domain.judgement
 import com.callbook.journal.domain.nextAlertAt
@@ -34,6 +36,7 @@ private const val ALERT_PREFS = "callbook_alerts"
 private const val ALERT_DAY = "day"
 private const val ALERT_SYMBOLS = "symbols"
 private const val ALERT_ON = "background"
+private const val FALL_WATCH = "fall_watch"
 private val India = ZoneId.of("Asia/Kolkata")
 
 /** Large-dip buy alerts for the whole session, not only while Strategy is open. */
@@ -89,29 +92,41 @@ object DipAlerts {
     fun scan(context: Context) {
         if (!enabled(context)) return
         val now = LocalDateTime.now(India)
-        if (!isMarketWeekday(now.dayOfWeek) || !inMarketHours(now.toLocalTime())) return
+        if (!isMarketWeekday(now.dayOfWeek) || !inAlertHours(now.toLocalTime())) return
         val slice = runCatching { PublicQuotes.scanBoard(CapSize.LARGE, dips = true, fresh = true) }.getOrNull()
         val held = openSymbols(context)
         val buys = slice?.checks.orEmpty().filter {
             it.suggestion == DipSuggestion.BUY && it.symbol.uppercase() !in held
         }
-        Log.i("Callbook", "dip scan buys=${buys.size} checked=${slice?.checks?.size ?: -1}")
-        if (buys.isEmpty()) return
+        val nowMillis = System.currentTimeMillis()
         val fresh = synchronized(gate) {
             val prefs = context.getSharedPreferences(ALERT_PREFS, Context.MODE_PRIVATE)
             val day = now.toLocalDate().toString()
-            val sent = if (prefs.getString(ALERT_DAY, "") == day) {
-                prefs.getStringSet(ALERT_SYMBOLS, emptySet()).orEmpty()
-            } else {
-                emptySet()
+            val sameDay = prefs.getString(ALERT_DAY, "") == day
+            val sent = if (sameDay) prefs.getStringSet(ALERT_SYMBOLS, emptySet()).orEmpty() else emptySet()
+            val watches = if (sameDay) decodeWatches(prefs.getString(FALL_WATCH, "")) else emptyMap()
+            val nextWatches = linkedMapOf<String, FallWatch>()
+            val calmed = mutableListOf<com.callbook.journal.domain.DipCheck>()
+            buys.forEach { buy ->
+                val key = buy.symbol.uppercase()
+                val (watch, paused) = fallHasPaused(buy.dayLow, buy.price, watches[key], nowMillis)
+                nextWatches[key] = watch
+                if (paused) calmed += buy
             }
-            val next = buys.filter { it.symbol !in sent }
+            val next = calmed.filter { it.symbol !in sent }
+            Log.i(
+                "Callbook",
+                "dip scan buys=${buys.size} waiting=${buys.size - calmed.size} alerting=${next.size} checked=${slice?.checks?.size ?: -1}",
+            )
+            val edit = prefs.edit()
+                .putString(ALERT_DAY, day)
+                .putString(FALL_WATCH, encodeWatches(nextWatches))
             if (next.isNotEmpty()) {
-                prefs.edit()
-                    .putString(ALERT_DAY, day)
-                    .putStringSet(ALERT_SYMBOLS, sent + next.map { it.symbol })
-                    .commit()
+                edit.putStringSet(ALERT_SYMBOLS, sent + next.map { it.symbol })
+            } else if (!sameDay) {
+                edit.putStringSet(ALERT_SYMBOLS, emptySet())
             }
+            edit.commit()
             next
         }
         if (fresh.isEmpty()) return
@@ -170,6 +185,22 @@ object DipAlerts {
     private fun requestPhoneAwake(context: Context) {
         if (phoneKeepsAwake(context)) return
         openPhoneBattery(context)
+    }
+
+    private fun encodeWatches(watches: Map<String, FallWatch>): String =
+        watches.entries.joinToString("\n") { "${it.key}|${it.value.low}|${it.value.quietSinceMillis}" }
+
+    private fun decodeWatches(raw: String?): Map<String, FallWatch> {
+        if (raw.isNullOrBlank()) return emptyMap()
+        val watches = linkedMapOf<String, FallWatch>()
+        raw.lineSequence().forEach { line ->
+            val parts = line.split('|')
+            if (parts.size != 3) return@forEach
+            val low = parts[1].toDoubleOrNull() ?: return@forEach
+            val since = parts[2].toLongOrNull() ?: return@forEach
+            watches[parts[0]] = FallWatch(low, since)
+        }
+        return watches
     }
 
     private fun openSymbols(context: Context): Set<String> = runBlocking(Dispatchers.IO) {

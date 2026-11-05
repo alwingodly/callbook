@@ -30,6 +30,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.callbook.journal.domain.CapSize
 import com.callbook.journal.domain.Prediction
 import com.callbook.journal.ui.JournalFilter
 import com.callbook.journal.ui.accepts
@@ -53,6 +54,7 @@ fun JournalScreen(
     onFilter: (JournalFilter) -> Unit,
     onOpen: (Long) -> Unit,
     nowPrices: Map<String, Double> = emptyMap(),
+    caps: Map<String, CapSize> = emptyMap(),
     pricesLive: Boolean = false,
     onPrices: () -> Unit = {},
     onNew: () -> Unit = {},
@@ -126,6 +128,7 @@ fun JournalScreen(
                         is JournalRow.Item -> CallCard(
                             prediction = row.prediction,
                             now = nowPrices[row.prediction.symbol],
+                            cap = caps[row.prediction.symbol.trim().uppercase()],
                             onClick = { onOpen(row.prediction.id) },
                         )
                     }
