@@ -44,6 +44,7 @@ import com.callbook.journal.domain.rupees
 import com.callbook.journal.domain.shownTarget
 import com.callbook.journal.domain.stillHolding
 import com.callbook.journal.ui.components.CallCard
+import com.callbook.journal.ui.components.LiveRefresh
 import com.callbook.journal.ui.components.LivePriceChip
 import com.callbook.journal.ui.formatShortDay
 import com.callbook.journal.ui.theme.Accent
@@ -74,6 +75,7 @@ fun TodayScreen(
     onPrices: () -> Unit = {},
     onNew: () -> Unit = {},
     onSettings: () -> Unit = {},
+    onRefresh: suspend () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val today = LocalDate.now().toEpochDay()
@@ -133,6 +135,7 @@ fun TodayScreen(
                 }
             }
         }
+        LiveRefresh(onRefresh = onRefresh, modifier = Modifier.weight(1f)) {
         if (loading && predictions.isEmpty()) {
             Text(
                 text = "Opening your journal...",
@@ -141,7 +144,7 @@ fun TodayScreen(
             )
         } else {
             LazyColumn(
-                modifier = Modifier.navigationBarsPadding(),
+                modifier = Modifier.fillMaxSize().navigationBarsPadding(),
                 contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 0.dp, bottom = 96.dp),
                 verticalArrangement = Arrangement.spacedBy(0.dp),
             ) {
@@ -149,7 +152,7 @@ fun TodayScreen(
                     item { HoldingTotal(together) }
                 }
                 if (holding.isNotEmpty()) {
-                    item { SectionLabel("Not sold") }
+                    item { SectionLabel("Open") }
                     items(holding, key = { "hold-${it.id}" }) { prediction ->
                         CallCard(
                             prediction = prediction,
@@ -163,7 +166,7 @@ fun TodayScreen(
                     item { DayTotals(summary, ifTarget) }
                 }
                 if (stillOpen.isNotEmpty()) {
-                    item { SectionLabel("This day") }
+                    item { SectionLabel("Bought") }
                     items(stillOpen, key = { it.id }) { prediction ->
                         CallCard(
                             prediction = prediction,
@@ -174,7 +177,7 @@ fun TodayScreen(
                     }
                 }
                 if (plans.isNotEmpty()) {
-                    item { SectionLabel("Not started") }
+                    item { SectionLabel("Planned") }
                     items(plans, key = { "plan-${it.id}" }) { prediction ->
                         CallCard(
                             prediction = prediction,
@@ -184,7 +187,7 @@ fun TodayScreen(
                     }
                 }
                 if (withdrawn.isNotEmpty()) {
-                    item { SectionLabel("Withdrawn") }
+                    item { SectionLabel("Closed") }
                     items(withdrawn, key = { "sold-${it.id}" }) { prediction ->
                         CallCard(
                             prediction = prediction,
@@ -206,13 +209,14 @@ fun TodayScreen(
                 }
             }
         }
+        }
     }
 }
 
 @Composable
 private fun HoldingTotal(amount: Double) {
     Column(modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 4.dp)) {
-        Text("Still holding", color = Mist, fontSize = 13.sp)
+        Text("Unrealised P&L", color = Mist, fontSize = 13.sp)
         Text(
             text = rupees(amount, signed = true),
             color = pnlColor(amount),
@@ -242,8 +246,8 @@ private fun DayTotals(summary: DaySummary, ifTarget: Double?) {
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Row(modifier = Modifier.fillMaxWidth()) {
-            MoneyTotal("Put in", summary.invested, Modifier.weight(1f), signed = false)
-            MoneyTotal("If target", ifTarget ?: 0.0, Modifier.weight(1f), blank = ifTarget == null)
+            MoneyTotal("Invested", summary.invested, Modifier.weight(1f), signed = false)
+            MoneyTotal("At target", ifTarget ?: 0.0, Modifier.weight(1f), blank = ifTarget == null)
             MoneyTotal("Sold", if (summary.priced > 0) summary.moved else 0.0, Modifier.weight(1f), blank = summary.priced == 0)
         }
     }

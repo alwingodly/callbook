@@ -2,6 +2,7 @@ package com.callbook.journal.ui.screens
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -18,11 +19,19 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -43,6 +52,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.callbook.journal.domain.BuyOutcome
+import com.callbook.journal.domain.BuyScore
 import com.callbook.journal.domain.CapSize
 import com.callbook.journal.domain.Danger
 import com.callbook.journal.domain.DipCheck
@@ -53,13 +64,20 @@ import com.callbook.journal.domain.StockHeadline
 import com.callbook.journal.domain.WeekShape
 import com.callbook.journal.domain.headlineDanger
 import com.callbook.journal.domain.isMarketWeekday
+import com.callbook.journal.domain.tradingDay
 import com.callbook.journal.domain.inMarketHours
 import com.callbook.journal.domain.newsAge
 import com.callbook.journal.domain.rupees
 import com.callbook.journal.domain.signedPercent
+import com.callbook.journal.domain.SymbolLoad
 import com.callbook.journal.ui.StrategyLink
+import com.callbook.journal.ui.components.LiveRefresh
 import com.callbook.journal.ui.openArticle
 import com.callbook.journal.ui.theme.Accent
+import com.callbook.journal.ui.theme.Faint
+import com.callbook.journal.ui.theme.Ink
+import com.callbook.journal.ui.theme.InkCard
+import com.callbook.journal.ui.theme.pnlColor
 import com.callbook.journal.ui.theme.Wash
 import com.callbook.journal.ui.theme.Amber
 import com.callbook.journal.ui.theme.Line
@@ -79,13 +97,38 @@ private enum class StrategyPlay(val label: String) {
     PAUSE("Pause"),
 }
 
+private enum class StrategyPage(val label: String) {
+    LIST("List"),
+    CHECK("Check"),
+    SCORE("Score"),
+}
+
+private sealed class StrategyLine {
+    data class Head(val suggestion: DipSuggestion, val count: Int) : StrategyLine()
+    data class Row(val dip: DipCheck) : StrategyLine()
+}
+
+private fun strategyLines(checks: List<DipCheck>): List<StrategyLine> =
+    DipSuggestion.entries.flatMap { suggestion ->
+        val rows = checks.filter { it.suggestion == suggestion }
+        if (rows.isEmpty()) {
+            emptyList()
+        } else {
+            listOf(StrategyLine.Head(suggestion, rows.size)) + rows.map { StrategyLine.Row(it) }
+        }
+    }
+
 @Composable
 fun DipsScreen(
     dips: DipLoad,
+    lookup: SymbolLoad = SymbolLoad.Idle,
+    onCheck: (String) -> Unit = {},
+    onRefresh: suspend (CapSize, Boolean, String) -> Unit = { _, _, _ -> },
     onLoad: (CapSize, Boolean, Boolean) -> Unit,
     focus: StrategyLink? = null,
     onFocusHandled: () -> Unit = {},
     held: Set<String> = emptySet(),
+    scores: List<BuyScore> = emptyList(),
     onAdd: (DipCheck) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
@@ -93,6 +136,8 @@ fun DipsScreen(
     val cap = CapSize.entries.firstOrNull { it.name == capName } ?: CapSize.LARGE
     var playName by rememberSaveable { mutableStateOf(StrategyPlay.DIP.name) }
     val play = StrategyPlay.entries.firstOrNull { it.name == playName } ?: StrategyPlay.DIP
+    var pageName by rememberSaveable { mutableStateOf(StrategyPage.LIST.name) }
+    val page = StrategyPage.entries.firstOrNull { it.name == pageName } ?: StrategyPage.LIST
     val listState = rememberLazyListState()
     var opened by rememberSaveable { mutableStateOf("") }
     val currentCap = rememberUpdatedState(cap)
@@ -109,29 +154,46 @@ fun DipsScreen(
             onLoad(currentCap.value, currentPlay.value == StrategyPlay.DIP, true)
         }
     }
-    LaunchedEffect(focus, dips) {
+    LaunchedEffect(focus, dips, page, cap, play) {
         val target = focus ?: return@LaunchedEffect
-        capName = target.cap
-        playName = target.play
+        val targetCap = CapSize.entries.firstOrNull { it.name == target.cap } ?: CapSize.LARGE
+        val targetPlay = StrategyPlay.entries.firstOrNull { it.name == target.play } ?: StrategyPlay.DIP
+        if (page != StrategyPage.LIST || cap != targetCap || play != targetPlay) {
+            pageName = StrategyPage.LIST.name
+            capName = targetCap.name
+            playName = targetPlay.name
+            return@LaunchedEffect
+        }
         if (dips !is DipLoad.Ready) return@LaunchedEffect
-        val board = dips.boards[CapSize.entries.firstOrNull { it.name == target.cap }]
-        val pause = target.play == StrategyPlay.PAUSE.name
-        val loaded = if (pause) board?.pausesLoaded == true else board?.dipsLoaded == true
+        val board = dips.boards[targetCap]
+        val loaded = if (targetPlay == StrategyPlay.PAUSE) board?.pausesLoaded == true else board?.dipsLoaded == true
         if (!loaded) return@LaunchedEffect
-        val rows = if (pause) board?.pauses else board?.dips
-        val index = rows.orEmpty().indexOfFirst { it.symbol.equals(target.symbol, true) }
+        val rows = if (targetPlay == StrategyPlay.PAUSE) board?.pauses else board?.dips
+        val index = strategyLines(rows.orEmpty()).indexOfFirst { line ->
+            line is StrategyLine.Row && line.dip.symbol.equals(target.symbol, true)
+        }
         if (index >= 0) {
             opened = target.symbol
             listState.animateScrollToItem(index)
         }
         onFocusHandled()
     }
+    var query by rememberSaveable { mutableStateOf("") }
+    val keyboard = LocalSoftwareKeyboardController.current
     val ready = dips as? DipLoad.Ready
     val board = ready?.boards?.get(cap)
     val playLoaded = if (play == StrategyPlay.DIP) board?.dipsLoaded == true else board?.pausesLoaded == true
     val shown = when (play) {
         StrategyPlay.DIP -> board?.dips.orEmpty()
         StrategyPlay.PAUSE -> board?.pauses.orEmpty()
+    }
+    val subtitle = when (page) {
+        StrategyPage.LIST -> board?.let {
+            val stamp = ready?.asOf?.takeIf { it.isNotBlank() }?.let { "  ·  $it" }.orEmpty()
+            "${cap.label}  ${signedPercent(it.marketPercent)}$stamp"
+        } ?: "Names that fit a dip or a pause."
+        StrategyPage.CHECK -> "One stock. The same buy, wait, or skip check."
+        StrategyPage.SCORE -> "A buy is scored on the next session."
     }
     Column(modifier = modifier.fillMaxSize().statusBarsPadding()) {
         Column(modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 8.dp)) {
@@ -143,102 +205,310 @@ fun DipsScreen(
                     fontSize = 28.sp,
                     modifier = Modifier.weight(1f),
                 )
-                Text(
-                    text = "Check",
-                    modifier = Modifier.clickable {
-                        onLoad(cap, play == StrategyPlay.DIP, true)
-                    }.padding(vertical = 8.dp),
-                    color = Accent,
-                    fontWeight = FontWeight.Medium,
-                    fontSize = 14.sp,
-                )
+                if (page == StrategyPage.LIST) {
+                    Text(
+                        text = "Refresh",
+                        modifier = Modifier.clickable {
+                            onLoad(cap, play == StrategyPlay.DIP, true)
+                        }.padding(vertical = 8.dp),
+                        color = Accent,
+                        fontWeight = FontWeight.Medium,
+                        fontSize = 14.sp,
+                    )
+                }
             }
             Text(
-                text = board?.let {
-                    val stamp = ready?.asOf?.takeIf { it.isNotBlank() }?.let { "  ·  $it" }.orEmpty()
-                    "${cap.label}  ${signedPercent(it.marketPercent)}$stamp"
-                } ?: "Dip or pause. Large, mid, and small.",
+                text = subtitle,
+                modifier = Modifier.padding(top = 2.dp),
                 color = Mist,
                 fontSize = 13.sp,
             )
-            Text(
-                text = "Prices are the NSE snapshot, about every 20 seconds. From 9:15 to 3:15 a buy alert sounds after the low has held for 3 minutes.",
-                modifier = Modifier.padding(top = 2.dp),
-                color = Mist,
-                fontSize = 12.sp,
+            Row(
+                modifier = Modifier.padding(top = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(22.dp),
+            ) {
+                StrategyPage.entries.forEach { option ->
+                    CapTab(option.label, option == page) { pageName = option.name }
+                }
+            }
+        }
+        when (page) {
+            StrategyPage.LIST -> StrategyList(
+                play = play,
+                cap = cap,
+                onPlay = { playName = it.name },
+                onCap = { capName = it.name },
+                playLoaded = playLoaded,
+                dips = dips,
+                ready = ready,
+                shown = shown,
+                listState = listState,
+                opened = opened,
+                held = held,
+                onAdd = onAdd,
+                onRefresh = { onRefresh(cap, play == StrategyPlay.DIP, "") },
+                modifier = Modifier.weight(1f),
             )
+            StrategyPage.CHECK -> StrategyCheck(
+                query = query,
+                onQuery = { query = it },
+                lookup = lookup,
+                held = held,
+                onCheck = {
+                    keyboard?.hide()
+                    onCheck(query)
+                },
+                onAdd = onAdd,
+                onRefresh = { onRefresh(cap, play == StrategyPlay.DIP, query) },
+                modifier = Modifier.weight(1f),
+            )
+            StrategyPage.SCORE -> StrategyScore(
+                scores = scores,
+                onRefresh = { onRefresh(cap, play == StrategyPlay.DIP, "") },
+                modifier = Modifier.weight(1f),
+            )
+        }
+    }
+}
+
+@Composable
+private fun StrategyList(
+    play: StrategyPlay,
+    cap: CapSize,
+    onPlay: (StrategyPlay) -> Unit,
+    onCap: (CapSize) -> Unit,
+    playLoaded: Boolean,
+    dips: DipLoad,
+    ready: DipLoad.Ready?,
+    shown: List<DipCheck>,
+    listState: LazyListState,
+    opened: String,
+    held: Set<String>,
+    onAdd: (DipCheck) -> Unit,
+    onRefresh: suspend () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(modifier = modifier) {
+        Column(modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(22.dp)) {
+                StrategyPlay.entries.forEach { option ->
+                    CapTab(option.label, option == play) { onPlay(option) }
+                }
+            }
+            Row(
+                modifier = Modifier.horizontalScroll(rememberScrollState()).padding(top = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(18.dp),
+            ) {
+                CapSize.entries.forEach { option ->
+                    CapTab(option.label, option == cap) { onCap(option) }
+                }
+            }
             Text(
                 text = if (play == StrategyPlay.PAUSE) {
                     "Already rising, then a small dip. Target is the recent high."
                 } else {
                     "Down 1% or more. Target is yesterday's close when it pays."
                 },
-                modifier = Modifier.padding(top = 4.dp),
+                modifier = Modifier.padding(top = 8.dp, bottom = 4.dp),
                 color = Mist,
                 fontSize = 12.sp,
             )
-            Row(
-                modifier = Modifier.padding(top = 12.dp),
-                horizontalArrangement = Arrangement.spacedBy(22.dp),
-            ) {
-                StrategyPlay.entries.forEach { option ->
-                    CapTab(option.label, option == play) { playName = option.name }
+        }
+        LiveRefresh(onRefresh = onRefresh, modifier = Modifier.weight(1f)) {
+            when {
+                !playLoaded && dips is DipLoad.Unavailable && ready == null -> Text(
+                    text = dips.message,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                    color = Mist,
+                )
+                !playLoaded -> Row(
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Accent, strokeWidth = 2.dp)
+                    Text(
+                        text = "  Checking ${cap.label.lowercase()} ${play.label.lowercase()}…",
+                        color = Mist,
+                        fontSize = 13.sp,
+                    )
                 }
-            }
-            Row(
-                modifier = Modifier.horizontalScroll(rememberScrollState()).padding(top = 8.dp, bottom = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(18.dp),
-            ) {
-                CapSize.entries.forEach { option ->
-                    CapTab(option.label, option == cap) { capName = option.name }
+                shown.isEmpty() -> Text(
+                    text = if (play == StrategyPlay.PAUSE) {
+                        "No ${cap.label.lowercase()} name is rising and pausing."
+                    } else {
+                        "No ${cap.label.lowercase()} name is down 1% or more."
+                    },
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                    color = Mist,
+                )
+                else -> {
+                    val lines = strategyLines(shown)
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier.fillMaxSize().navigationBarsPadding(),
+                        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 96.dp),
+                    ) {
+                        items(lines, key = { line ->
+                            when (line) {
+                                is StrategyLine.Head -> "head-${line.suggestion.name}"
+                                is StrategyLine.Row -> line.dip.symbol
+                            }
+                        }) { line ->
+                            when (line) {
+                                is StrategyLine.Head -> SuggestionHead(line.suggestion, line.count)
+                                is StrategyLine.Row -> {
+                                    val dip = line.dip
+                                    val holding = held.any { it.equals(dip.symbol, true) }
+                                    DipRow(
+                                        dip = dip,
+                                        expandNews = opened.equals(dip.symbol, true),
+                                        holding = holding,
+                                        onAdd = if (!holding && dip.suggestion != DipSuggestion.SKIP && dip.limitPrice > 0.0) {
+                                            { onAdd(dip) }
+                                        } else {
+                                            null
+                                        },
+                                    )
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
-        when {
-            !playLoaded && dips is DipLoad.Unavailable && ready == null -> Text(
-                text = dips.message,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                color = Mist,
-            )
-            !playLoaded -> Row(
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+    }
+}
+
+@Composable
+private fun SuggestionHead(suggestion: DipSuggestion, count: Int) {
+    val color = when (suggestion) {
+        DipSuggestion.BUY -> Profit
+        DipSuggestion.WAIT -> Amber
+        DipSuggestion.SKIP -> Loss
+    }
+    Text(
+        text = "${suggestion.label}  ·  $count",
+        modifier = Modifier.padding(top = 16.dp),
+        color = color,
+        fontWeight = FontWeight.SemiBold,
+        fontSize = 13.sp,
+    )
+}
+
+@Composable
+private fun StrategyCheck(
+    query: String,
+    onQuery: (String) -> Unit,
+    lookup: SymbolLoad,
+    held: Set<String>,
+    onCheck: () -> Unit,
+    onAdd: (DipCheck) -> Unit,
+    onRefresh: suspend () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    LiveRefresh(onRefresh = onRefresh, modifier = modifier) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .navigationBarsPadding()
+                .padding(start = 16.dp, end = 16.dp, bottom = 96.dp),
+        ) {
+            Row(
+                modifier = Modifier.padding(top = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Accent, strokeWidth = 2.dp)
+                OutlinedTextField(
+                    value = query,
+                    onValueChange = { onQuery(it.uppercase()) },
+                    modifier = Modifier.weight(1f),
+                    label = { Text("Stock") },
+                    placeholder = { Text("INFY") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(
+                        capitalization = KeyboardCapitalization.Characters,
+                        imeAction = ImeAction.Search,
+                    ),
+                    keyboardActions = KeyboardActions(onSearch = { onCheck() }),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = Ink,
+                        unfocusedBorderColor = Line,
+                        focusedLabelColor = Accent,
+                        unfocusedLabelColor = Mist,
+                        cursorColor = Ink,
+                        focusedTextColor = Paper,
+                        unfocusedTextColor = Paper,
+                        focusedContainerColor = InkCard,
+                        unfocusedContainerColor = InkCard,
+                        focusedPlaceholderColor = Faint,
+                        unfocusedPlaceholderColor = Faint,
+                    ),
+                )
                 Text(
-                    text = "  Checking ${cap.label.lowercase()} ${play.label.lowercase()}…",
+                    text = "Check",
+                    modifier = Modifier
+                        .clickable(onClick = onCheck)
+                        .padding(start = 12.dp, top = 8.dp, bottom = 8.dp),
+                    color = Accent,
+                    fontWeight = FontWeight.Medium,
+                    fontSize = 14.sp,
+                )
+            }
+            when (lookup) {
+                SymbolLoad.Idle -> Text(
+                    text = "Type a symbol, such as INFY.",
+                    modifier = Modifier.padding(top = 16.dp),
                     color = Mist,
                     fontSize = 13.sp,
                 )
+                SymbolLoad.Loading -> Text(
+                    text = "Checking ${query.trim().ifBlank { "this name" }}…",
+                    modifier = Modifier.padding(top = 16.dp),
+                    color = Mist,
+                    fontSize = 13.sp,
+                )
+                is SymbolLoad.Unavailable -> Text(
+                    text = lookup.message,
+                    modifier = Modifier.padding(top = 16.dp),
+                    color = Mist,
+                    fontSize = 13.sp,
+                )
+                is SymbolLoad.Ready -> DipRow(
+                    dip = lookup.result.check,
+                    expandNews = false,
+                    holding = held.any { it.equals(lookup.result.check.symbol, true) },
+                    capLabel = lookup.result.cap?.label,
+                    onAdd = if (
+                        !held.any { it.equals(lookup.result.check.symbol, true) } &&
+                        lookup.result.check.suggestion != DipSuggestion.SKIP &&
+                        lookup.result.check.limitPrice > 0.0
+                    ) {
+                        { onAdd(lookup.result.check) }
+                    } else {
+                        null
+                    },
+                )
             }
-            shown.isEmpty() -> Text(
-                text = if (play == StrategyPlay.PAUSE) {
-                    "No ${cap.label.lowercase()} name is rising and pausing."
-                } else {
-                    "No ${cap.label.lowercase()} cap is down 1% or more."
-                },
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                color = Mist,
-            )
-            board != null -> LazyColumn(
-                state = listState,
-                modifier = Modifier.navigationBarsPadding(),
-                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 96.dp),
-            ) {
-                items(shown, key = { it.symbol }) { dip ->
-                    val holding = held.any { it.equals(dip.symbol, true) }
-                    DipRow(
-                        dip = dip,
-                        expandNews = opened.equals(dip.symbol, true),
-                        holding = holding,
-                        onAdd = if (!holding && dip.suggestion != DipSuggestion.SKIP && dip.limitPrice > 0.0) {
-                            { onAdd(dip) }
-                        } else {
-                            null
-                        },
-                    )
-                }
-            }
+        }
+    }
+}
+
+@Composable
+private fun StrategyScore(
+    scores: List<BuyScore>,
+    onRefresh: suspend () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    LiveRefresh(onRefresh = onRefresh, modifier = modifier) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .navigationBarsPadding()
+                .padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 96.dp),
+        ) {
+            LastCheck(scores)
         }
     }
 }
@@ -263,10 +533,92 @@ private fun CapTab(label: String, selected: Boolean, onClick: () -> Unit) {
 }
 
 @Composable
+private fun LastCheck(scores: List<BuyScore>) {
+    if (scores.isEmpty()) {
+        Text(
+            text = "No buy is waiting to be scored.",
+            color = Mist,
+            fontSize = 13.sp,
+        )
+        return
+    }
+    val today = tradingDay(LocalDate.now(India)).toEpochDay()
+    val waiting = scores.filter { it.outcome == null && it.epochDay == today }
+    val latest = scores.filter { it.outcome != null }.maxOfOrNull { it.epochDay }
+    val shown = scores.filter { it.epochDay == latest && it.outcome != null }.sortedBy { it.symbol }
+    if (shown.isEmpty() && waiting.isEmpty()) {
+        Text(
+            text = "No buy is waiting to be scored.",
+            color = Mist,
+            fontSize = 13.sp,
+        )
+        return
+    }
+    Column {
+        if (shown.isNotEmpty()) {
+            val targets = shown.count { it.outcome == BuyOutcome.TARGET }
+            val stops = shown.count { it.outcome == BuyOutcome.STOP }
+            val opens = shown.count { it.outcome == BuyOutcome.OPEN }
+            Text("Last session", color = Mist, fontWeight = FontWeight.Medium, fontSize = 13.sp)
+            Text(
+                text = "$targets target · $stops stop · $opens open",
+                modifier = Modifier.padding(top = 2.dp, bottom = 4.dp),
+                color = Paper,
+                fontSize = 13.sp,
+            )
+            shown.forEach { row ->
+                Row(modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
+                    Text(
+                        text = row.symbol,
+                        modifier = Modifier.weight(1f),
+                        color = Paper,
+                        fontSize = 14.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        text = when (row.outcome) {
+                            BuyOutcome.TARGET -> "Target"
+                            BuyOutcome.STOP -> "Stop"
+                            BuyOutcome.OPEN -> "Open"
+                            null -> ""
+                        },
+                        color = when (row.outcome) {
+                            BuyOutcome.TARGET -> Profit
+                            BuyOutcome.STOP -> Loss
+                            else -> Mist
+                        },
+                        fontSize = 14.sp,
+                    )
+                }
+            }
+        }
+        if (waiting.isNotEmpty()) {
+            Text(
+                text = "Pending next session",
+                modifier = Modifier.padding(top = if (shown.isEmpty()) 0.dp else 8.dp),
+                color = Mist,
+                fontWeight = FontWeight.Medium,
+                fontSize = 13.sp,
+            )
+            waiting.sortedBy { it.symbol }.forEach { row ->
+                Text(
+                    text = row.symbol,
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                    color = Paper,
+                    fontSize = 14.sp,
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun DipRow(
     dip: DipCheck,
     expandNews: Boolean,
     holding: Boolean,
+    capLabel: String? = null,
     onAdd: (() -> Unit)?,
 ) {
     var newsOpen by rememberSaveable(dip.symbol) { mutableStateOf(false) }
@@ -297,12 +649,16 @@ private fun DipRow(
                 )
                 Text(
                     text = signedPercent(dip.changePercent),
-                    color = Loss,
+                    color = pnlColor(dip.changePercent),
                     fontWeight = FontWeight.Medium,
                     fontSize = 16.sp,
                 )
             }
-            Text(text = rupees(dip.price), color = Mist, fontSize = 13.sp)
+            Text(
+                text = if (capLabel.isNullOrBlank()) rupees(dip.price) else "$capLabel  ·  ${rupees(dip.price)}",
+                color = Mist,
+                fontSize = 13.sp,
+            )
             Text(
                 text = dip.week.label,
                 modifier = Modifier.padding(top = 4.dp),
@@ -317,7 +673,7 @@ private fun DipRow(
                 Text(text = span, color = Mist, fontSize = 13.sp)
             }
             Text(
-                text = "Danger ${dip.dangerPercent}%",
+                text = "Risk ${dip.dangerPercent}%",
                 modifier = Modifier.padding(top = 2.dp),
                 color = when (dip.danger) {
                     Danger.LOW -> Profit
@@ -345,7 +701,7 @@ private fun DipRow(
                 Text(text = dip.limitNote, color = Mist, fontSize = 13.sp)
                 if (dip.stopPrice > 0.0 && dip.targetPrice > 0.0) {
                     Text(
-                        text = "Stop ${rupees(dip.stopPrice)}   ·   Target ${rupees(dip.targetPrice)}",
+                        text = "Stop loss ${rupees(dip.stopPrice)}   ·   Target ${rupees(dip.targetPrice)}",
                         modifier = Modifier.padding(top = 2.dp),
                         color = Paper,
                         fontSize = 13.sp,
@@ -353,7 +709,7 @@ private fun DipRow(
                 }
                 if (holding) {
                     Text(
-                        text = "Already holding",
+                        text = "Already open",
                         modifier = Modifier.padding(top = 4.dp),
                         color = Amber,
                         fontWeight = FontWeight.Medium,
@@ -425,7 +781,7 @@ private fun StrategyNews(dip: DipCheck, open: Boolean, onToggle: () -> Unit) {
             dip.headlines.none { it.read.tone == HeadlineTone.NEGATIVE && it.read.percent >= 90 }
         ) {
             Text(
-                text = "Danger is high because the week is still falling, not because of a headline.",
+                text = "Risk is high because the week is still falling, not because of a headline.",
                 modifier = Modifier.padding(top = 6.dp),
                 color = Mist,
                 fontSize = 12.sp,

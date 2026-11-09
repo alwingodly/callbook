@@ -22,7 +22,8 @@ class CallbookApp : Application() {
 }
 
 class AppContainer(context: Context) {
-    val repository = PredictionRepository(AppDatabase.get(context).predictionDao())
+    private val database = AppDatabase.get(context)
+    val repository = PredictionRepository(database.predictionDao(), database.buyScoreDao())
     val account = AccountStore(context)
     val tickers = TickerStore(context)
 }

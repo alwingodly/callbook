@@ -35,6 +35,7 @@ import com.callbook.journal.domain.Prediction
 import com.callbook.journal.ui.JournalFilter
 import com.callbook.journal.ui.accepts
 import com.callbook.journal.ui.components.CallCard
+import com.callbook.journal.ui.components.LiveRefresh
 import com.callbook.journal.ui.components.LivePriceChip
 import com.callbook.journal.ui.formatDay
 import com.callbook.journal.ui.theme.Accent
@@ -58,6 +59,7 @@ fun JournalScreen(
     pricesLive: Boolean = false,
     onPrices: () -> Unit = {},
     onNew: () -> Unit = {},
+    onRefresh: suspend () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val rows = remember(predictions, filter) { buildRows(predictions.filter(filter::accepts)) }
@@ -89,6 +91,7 @@ fun JournalScreen(
                 }
             }
         }
+        LiveRefresh(onRefresh = onRefresh, modifier = Modifier.weight(1f)) {
         if (loading && predictions.isEmpty()) {
             Text(
                 text = "Opening your journal...",
@@ -96,14 +99,18 @@ fun JournalScreen(
                 color = Mist,
             )
         } else if (rows.isEmpty()) {
-            Text(
-                text = if (predictions.isEmpty()) "No calls yet." else "Nothing in this filter.",
-                modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp),
-                color = Mist,
-            )
+            LazyColumn(modifier = Modifier.fillMaxSize().navigationBarsPadding()) {
+                item {
+                    Text(
+                        text = if (predictions.isEmpty()) "No calls yet." else "Nothing in this filter.",
+                        modifier = Modifier.padding(vertical = 12.dp),
+                        color = Mist,
+                    )
+                }
+            }
         } else {
             LazyColumn(
-                modifier = Modifier.navigationBarsPadding(),
+                modifier = Modifier.fillMaxSize().navigationBarsPadding(),
                 contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 96.dp),
                 verticalArrangement = Arrangement.spacedBy(0.dp),
             ) {
@@ -134,6 +141,7 @@ fun JournalScreen(
                     }
                 }
             }
+        }
         }
     }
 }

@@ -212,21 +212,21 @@ fun EditCallScreen(
                     },
                 )
                 ChoiceRow(
-                    options = listOf("Not started", "Bought"),
+                    options = listOf("Planned", "Bought"),
                     selectedIndex = if (current.notStarted) 0 else 1,
                     onSelect = { index -> draft = current.copy(notStarted = index == 0) },
                 )
                 Text(
                     text = if (current.notStarted) {
-                        "When the price reaches this after you save, it is bought only if the check is still a buy. A price from earlier today does not count. A wait or a skip stays a plan."
+                        "A planned buy fills after you save, only if the check is still Buy and the price trades here. An earlier price today does not count. Wait or Skip stays planned."
                     } else {
-                        "Bought means the amount is in the stock."
+                        "Bought means the capital is in the stock."
                     },
                     color = Mist,
                     fontSize = 12.sp,
                 )
                 Field(
-                    label = if (current.notStarted) "Buy price" else "Price on Groww now",
+                    label = if (current.notStarted) "Limit" else "Entry",
                     value = current.entry,
                     onValue = { draft = current.copy(entry = it) },
                     placeholder = "2456.50",
@@ -247,7 +247,7 @@ fun EditCallScreen(
                     keyboard = KeyboardOptions(keyboardType = KeyboardType.Decimal, imeAction = ImeAction.Next),
                 )
                 Field(
-                    label = "Amount",
+                    label = "Capital",
                     value = current.capital,
                     onValue = { draft = current.copy(capital = it) },
                     placeholder = "10000",
@@ -362,13 +362,13 @@ private fun CapitalNote(
     val short = if (wanted == null) 0.0 else wanted - available
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Text(
-            text = "Cash left  ${rupees(available, signed = available < -0.005)}",
+            text = "Available cash  ${rupees(available, signed = available < -0.005)}",
             color = if (available < -0.005) Loss else Mist,
             fontSize = 13.sp,
         )
         if (short > 0.5) {
             Text(
-                text = "Short ${rupees(short)}. This stock can use only the cash left.",
+                text = "Shortfall ${rupees(short)}. Capital cannot exceed available cash.",
                 color = Amber,
                 fontSize = 13.sp,
             )

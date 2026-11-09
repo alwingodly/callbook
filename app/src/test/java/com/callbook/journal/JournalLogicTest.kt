@@ -26,18 +26,23 @@ import com.callbook.journal.domain.planWarning
 import com.callbook.journal.domain.reading
 import com.callbook.journal.domain.returnedCash
 import com.callbook.journal.domain.shownTarget
+import com.callbook.journal.domain.BuyOutcome
 import com.callbook.journal.domain.PricePrint
+import com.callbook.journal.domain.scoreSession
 import com.callbook.journal.domain.allowsAutoBuy
 import com.callbook.journal.domain.lowAfterAdded
 import com.callbook.journal.domain.settleNotStarted
 import com.callbook.journal.domain.showsCapBadge
 import com.callbook.journal.domain.stillHolding
 import com.callbook.journal.domain.HeadlineTone
+import com.callbook.journal.domain.HeadlineRead
+import com.callbook.journal.domain.fitsIndianMarket
+import com.callbook.journal.domain.nextSessionLabel
+import com.callbook.journal.domain.sectorOutlook
 import com.callbook.journal.domain.LoserBoard
 import com.callbook.journal.domain.LosersLoad
 import com.callbook.journal.domain.Danger
 import com.callbook.journal.domain.DipSuggestion
-import com.callbook.journal.domain.HeadlineRead
 import com.callbook.journal.domain.StockHeadline
 import com.callbook.journal.domain.headlineDanger
 import com.callbook.journal.domain.WeekShape
@@ -547,6 +552,61 @@ class JournalLogicTest {
         val missed = settleNotStarted(plan, wednesday, java.time.LocalTime.of(15, 30), dayLow = 105.0, freeCash = 50_000.0, clearBuy = true)
         assertEquals(true, missed!!.notStarted)
         assertEquals(wednesday.plusDays(1).toEpochDay(), missed.epochDay)
+    }
+
+    @Test
+    fun aSectorIsCarefulTomorrowWhenAMajorStoryHitsTheSegment() {
+        val fraud = story("Bank shares fall after fraud probe", HeadlineTone.NEGATIVE, 90)
+        val rate = story("RBI holds repo rate, lenders stay cautious", HeadlineTone.MIXED, 50)
+        val mild = story("Shares slip in late trade", HeadlineTone.NEGATIVE, 70)
+        val another = story("Broker warns on margins", HeadlineTone.NEGATIVE, 70)
+        val mixed = story("Markets end flat", HeadlineTone.MIXED, 50)
+        val rally = story("Banks rally after a rate cut", HeadlineTone.POSITIVE, 90)
+        val hit = sectorOutlook(0.4, listOf(fraud))
+        assertEquals("Negative for this sector tomorrow.", hit!!.note)
+        assertEquals(fraud.title, hit.headline)
+        assertEquals(
+            "Rates may move this sector tomorrow.",
+            sectorOutlook(0.1, listOf(rate))!!.note,
+        )
+        assertEquals(
+            "Several negative stories, and the sector is down. It may stay weak tomorrow.",
+            sectorOutlook(-0.6, listOf(mild, another))!!.note,
+        )
+        assertEquals(
+            "A sharp fall today, with no headline. It may extend into tomorrow.",
+            sectorOutlook(-2.4, emptyList())!!.note,
+        )
+        assertNull(sectorOutlook(-0.4, listOf(mixed)))
+        assertNull(sectorOutlook(0.8, listOf(rally)))
+        assertTrue(fitsIndianMarket("Nifty Bank slips after RBI holds rates"))
+        assertTrue(fitsIndianMarket("Crude oil jumps"))
+        assertFalse(fitsIndianMarket("Nasdaq falls after the Fed"))
+        assertTrue(fitsIndianMarket("Wall Street banks fall as Nifty watches"))
+        val friday = java.time.LocalDate.of(2026, 11, 6)
+        assertEquals("on Monday", nextSessionLabel(friday))
+        assertEquals("tomorrow", nextSessionLabel(friday.minusDays(1)))
+        assertEquals("on Monday", nextSessionLabel(friday.plusDays(1)))
+        assertEquals(
+            "Rates may move this sector on Monday.",
+            sectorOutlook(0.1, listOf(rate), "on Monday")!!.note,
+        )
+    }
+
+    private fun story(title: String, tone: HeadlineTone, percent: Int) =
+        StockHeadline(title, "Mint", "https://example.com", 0L, HeadlineRead(tone, percent))
+
+    @Test
+    fun theNextSessionMarksTargetStopOrOpen() {
+        val session = 20_000L
+        val noon = java.time.LocalTime.of(12, 0)
+        val close = java.time.LocalTime.of(15, 30)
+        assertEquals(BuyOutcome.TARGET, scoreSession(95.0, 110.0, 99.0, 111.0, session, session, noon))
+        assertEquals(BuyOutcome.STOP, scoreSession(95.0, 110.0, 94.0, 108.0, session, session, noon))
+        assertEquals(BuyOutcome.STOP, scoreSession(95.0, 110.0, 94.0, 112.0, session, session, noon))
+        assertNull(scoreSession(95.0, 110.0, 99.0, 105.0, session, session, noon))
+        assertEquals(BuyOutcome.OPEN, scoreSession(95.0, 110.0, 99.0, 105.0, session, session, close))
+        assertEquals(BuyOutcome.OPEN, scoreSession(95.0, 110.0, 99.0, 105.0, session, session + 1, noon))
     }
 
     @Test

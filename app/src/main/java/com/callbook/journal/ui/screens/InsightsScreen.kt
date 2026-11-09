@@ -50,6 +50,7 @@ import com.callbook.journal.domain.bankReturnAmount
 import com.callbook.journal.domain.parseAmount
 import com.callbook.journal.domain.rupees
 import com.callbook.journal.domain.wholePercent
+import com.callbook.journal.ui.components.LiveRefresh
 import com.callbook.journal.ui.components.Panel
 import com.callbook.journal.ui.formatShortDay
 import com.callbook.journal.ui.theme.Accent
@@ -72,6 +73,7 @@ fun InsightsScreen(
     banked: Double,
     onAddFromBank: (Double) -> Unit,
     onReturnToBank: (Double) -> Unit,
+    onRefresh: suspend () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     if (loading) {
@@ -82,15 +84,16 @@ fun InsightsScreen(
     }
     val insights = remember(predictions) { insightsOf(predictions) }
     val itr = remember(predictions) { itrFile(predictions) }
+    LiveRefresh(onRefresh = onRefresh, modifier = modifier.fillMaxSize().statusBarsPadding()) {
     LazyColumn(
-        modifier = modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding(),
+        modifier = Modifier.fillMaxSize().navigationBarsPadding(),
         contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 96.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         item {
             Text("Money", color = Paper, fontWeight = FontWeight.SemiBold, fontSize = 28.sp)
             Text(
-                text = "${insights.open} not sold  ·  ${insights.total} stocks",
+                text = "${insights.open} open  ·  ${insights.total} stocks",
                 color = Mist,
                 fontSize = 12.sp,
             )
@@ -118,6 +121,7 @@ fun InsightsScreen(
                 )
             }
         }
+    }
     }
 }
 
@@ -243,7 +247,7 @@ private fun LedgerBlock(
     val capital = availableCash(banked, insights)
     Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text("Free to trade", color = Mist, fontSize = 12.sp)
+            Text("Available cash", color = Mist, fontSize = 12.sp)
             Text(
                 text = rupees(capital, signed = capital < -0.005),
                 color = when {
@@ -262,7 +266,7 @@ private fun LedgerBlock(
             )
             if (insights.taxCut > 0.5) {
                 Text(
-                    text = "Tax cut on sales ${rupees(insights.taxCut)}. Already out of free cash.",
+                    text = "STCG set aside ${rupees(insights.taxCut)}. Already out of available cash.",
                     color = Mist,
                     fontSize = 12.sp,
                 )
@@ -295,13 +299,13 @@ private fun LedgerBlock(
             fontSize = 14.sp,
         )
         Text(
-            text = "ITR tax  ${rupees(itr.tax)}",
+            text = "STCG  ${rupees(itr.tax)}",
             color = Paper,
             fontWeight = FontWeight.SemiBold,
             fontSize = 14.sp,
         )
         Text(
-            text = "After tax  ${rupees(itr.afterTax, signed = true)}",
+            text = "After STCG  ${rupees(itr.afterTax, signed = true)}",
             color = pnlColor(itr.afterTax),
             fontWeight = FontWeight.SemiBold,
             fontSize = 14.sp,

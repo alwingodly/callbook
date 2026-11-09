@@ -10,6 +10,7 @@ import android.os.PowerManager
 import android.provider.Settings
 import android.util.Log
 import com.callbook.journal.data.AppDatabase
+import com.callbook.journal.data.PredictionRepository
 import com.callbook.journal.data.PublicQuotes
 import com.callbook.journal.data.toModel
 import com.callbook.journal.domain.CapSize
@@ -19,6 +20,7 @@ import com.callbook.journal.domain.ResultKind
 import com.callbook.journal.domain.fallHasPaused
 import com.callbook.journal.domain.inAlertHours
 import com.callbook.journal.domain.isMarketWeekday
+import com.callbook.journal.domain.tradingDay
 import com.callbook.journal.domain.judgement
 import com.callbook.journal.domain.nextAlertAt
 import java.time.LocalDateTime
@@ -94,6 +96,7 @@ object DipAlerts {
         val now = LocalDateTime.now(India)
         if (!isMarketWeekday(now.dayOfWeek) || !inAlertHours(now.toLocalTime())) return
         val slice = runCatching { PublicQuotes.scanBoard(CapSize.LARGE, dips = true, fresh = true) }.getOrNull()
+        rememberBuys(context, now.toLocalDate(), slice?.checks.orEmpty())
         val held = openSymbols(context)
         val buys = slice?.checks.orEmpty().filter {
             it.suggestion == DipSuggestion.BUY && it.symbol.uppercase() !in held
@@ -201,6 +204,21 @@ object DipAlerts {
             watches[parts[0]] = FallWatch(low, since)
         }
         return watches
+    }
+
+    private fun rememberBuys(context: Context, day: java.time.LocalDate, checks: List<com.callbook.journal.domain.DipCheck>) {
+        val buys = checks.filter {
+            it.suggestion == DipSuggestion.BUY && it.limitPrice > 0.0 && it.stopPrice > 0.0 && it.targetPrice > 0.0
+        }
+        if (buys.isEmpty()) return
+        val epochDay = tradingDay(day).toEpochDay()
+        runBlocking(Dispatchers.IO) {
+            val database = AppDatabase.get(context)
+            val repository = PredictionRepository(database.predictionDao(), database.buyScoreDao())
+            buys.forEach { dip ->
+                repository.rememberBuy(dip.symbol, epochDay, dip.limitPrice, dip.stopPrice, dip.targetPrice)
+            }
+        }
     }
 
     private fun openSymbols(context: Context): Set<String> = runBlocking(Dispatchers.IO) {

@@ -6,8 +6,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.DateRange
+import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
@@ -48,8 +48,10 @@ import com.callbook.journal.ui.screens.EditCallScreen
 import com.callbook.journal.ui.screens.InsightsScreen
 import com.callbook.journal.ui.screens.DipsScreen
 import com.callbook.journal.ui.screens.JournalScreen
-import com.callbook.journal.ui.screens.LosersScreen
 import com.callbook.journal.ui.screens.SettingsScreen
+import com.callbook.journal.domain.SectorLoad
+import com.callbook.journal.ui.screens.SectorScreen
+import com.callbook.journal.ui.screens.SectorsScreen
 import com.callbook.journal.ui.screens.TodayScreen
 import com.callbook.journal.ui.theme.Canvas
 import com.callbook.journal.ui.theme.Ink
@@ -62,13 +64,15 @@ private object Routes {
     const val Journal = "journal"
     const val Insights = "insights"
     const val Dips = "dips"
-    const val Losers = "losers"
+    const val Sectors = "sectors"
+    const val Sector = "sector/{name}"
     const val Settings = "settings"
     const val Edit = "edit?id={id}"
     const val Detail = "detail/{id}"
 
     fun edit(id: Long = -1L) = "edit?id=$id"
     fun detail(id: Long) = "detail/$id"
+    fun sector(name: String) = "sector/$name"
 }
 
 private data class Tab(val route: String, val label: String, val icon: ImageVector)
@@ -77,7 +81,7 @@ private val tabs = listOf(
     Tab(Routes.Today, "Today", Icons.Filled.DateRange),
     Tab(Routes.Journal, "Stocks", Icons.AutoMirrored.Filled.List),
     Tab(Routes.Dips, "Strategy", Icons.Filled.Notifications),
-    Tab(Routes.Losers, "Losers", Icons.Filled.KeyboardArrowDown),
+    Tab(Routes.Sectors, "Sectors", Icons.Filled.GridView),
     Tab(Routes.Insights, "Money", Icons.Filled.Info),
 )
 
@@ -98,8 +102,10 @@ fun CallbookRoot(
     val pricesLive by viewModel.pricesLive.collectAsStateWithLifecycle()
     val chartSpot by viewModel.chartSpot.collectAsStateWithLifecycle()
     val news by viewModel.news.collectAsStateWithLifecycle()
-    val losers by viewModel.losers.collectAsStateWithLifecycle()
     val dips by viewModel.dips.collectAsStateWithLifecycle()
+    val symbolCheck by viewModel.symbolCheck.collectAsStateWithLifecycle()
+    val sectors by viewModel.sectors.collectAsStateWithLifecycle()
+    val buyScores by viewModel.buyScores.collectAsStateWithLifecycle()
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     LaunchedEffect(pricesLive) {
         if (!pricesLive) return@LaunchedEffect
@@ -138,7 +144,7 @@ fun CallbookRoot(
     }
     val loading = load is JournalLoad.Loading
     val showChrome = route == Routes.Today || route == Routes.Journal || route == Routes.Insights ||
-        route == Routes.Dips || route == Routes.Losers || route == Routes.Settings
+        route == Routes.Dips || route == Routes.Sectors || route == Routes.Settings
     Box(modifier = Modifier.fillMaxSize().background(Canvas)) {
         NavHost(navController = nav, startDestination = Routes.Today, modifier = Modifier.fillMaxSize()) {
             composable(Routes.Today) {
@@ -156,6 +162,7 @@ fun CallbookRoot(
                     onPrices = viewModel::toggleLivePrices,
                     onNew = { nav.navigate(Routes.edit()) },
                     onSettings = { nav.openRoot(Routes.Settings) },
+                    onRefresh = viewModel::refreshJournal,
                 )
             }
             composable(Routes.Journal) {
@@ -170,15 +177,23 @@ fun CallbookRoot(
                     pricesLive = pricesLive,
                     onPrices = viewModel::toggleLivePrices,
                     onNew = { nav.navigate(Routes.edit()) },
+                    onRefresh = viewModel::refreshJournal,
                 )
             }
             composable(Routes.Dips) {
                 DipsScreen(
                     dips = dips,
+                    lookup = symbolCheck,
+                    onCheck = viewModel::checkStock,
+                    onRefresh = { cap, dipsPlay, symbol ->
+                        viewModel.refreshBoard(cap, dipsPlay)
+                        if (symbol.isNotBlank()) viewModel.refreshSymbol(symbol)
+                    },
                     onLoad = viewModel::loadBoard,
                     focus = strategyLink,
                     onFocusHandled = onStrategyLinkHandled,
                     held = held,
+                    scores = buyScores,
                     onAdd = { dip ->
                         if (!alreadyHolding(predictions, dip.symbol)) {
                             val free = availableCash(banked, insightsOf(predictions))
@@ -188,10 +203,26 @@ fun CallbookRoot(
                     },
                 )
             }
-            composable(Routes.Losers) {
-                LosersScreen(
-                    losers = losers,
-                    onLoad = viewModel::loadLosers,
+            composable(Routes.Sectors) {
+                SectorsScreen(
+                    sectors = sectors,
+                    onLoad = viewModel::loadSectors,
+                    onRefresh = viewModel::refreshSectors,
+                    onOpen = { name -> nav.navigate(Routes.sector(name)) },
+                )
+            }
+            composable(
+                route = Routes.Sector,
+                arguments = listOf(navArgument("name") { type = NavType.StringType }),
+            ) { entry ->
+                val name = entry.arguments?.getString("name").orEmpty()
+                val read = (sectors as? SectorLoad.Ready)?.sectors?.firstOrNull { it.sector.name == name }
+                SectorScreen(
+                    sector = read,
+                    loading = sectors is SectorLoad.Loading || sectors is SectorLoad.Idle,
+                    onBack = { nav.popBackStack() },
+                    onLoad = viewModel::loadSectors,
+                    onRefresh = viewModel::refreshSectors,
                 )
             }
             composable(Routes.Settings) {
@@ -204,6 +235,7 @@ fun CallbookRoot(
                     banked = banked,
                     onAddFromBank = viewModel::addFromBank,
                     onReturnToBank = viewModel::returnToBank,
+                    onRefresh = viewModel::refreshJournal,
                 )
             }
             composable(
@@ -257,6 +289,7 @@ fun CallbookRoot(
                         viewModel.delete(id)
                         nav.popBackStack()
                     },
+                    onRefresh = { viewModel.refreshDetail(existing?.symbol.orEmpty()) },
                 )
             }
         }

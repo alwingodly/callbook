@@ -10,8 +10,11 @@ import com.callbook.journal.data.AccountStore
 import com.callbook.journal.data.PredictionRepository
 import com.callbook.journal.data.PublicQuotes
 import com.callbook.journal.data.TickerStore
+import com.callbook.journal.domain.BuyScore
 import com.callbook.journal.domain.CapDips
 import com.callbook.journal.domain.CapSize
+import com.callbook.journal.domain.DipCheck
+import com.callbook.journal.domain.DipSuggestion
 import com.callbook.journal.domain.ChartLoad
 import com.callbook.journal.domain.ChartSpan
 import com.callbook.journal.domain.DipLoad
@@ -21,12 +24,15 @@ import com.callbook.journal.domain.availableCash
 import com.callbook.journal.domain.insightsOf
 import com.callbook.journal.domain.settleNotStarted
 import com.callbook.journal.domain.showsCapBadge
+import com.callbook.journal.domain.nextSessionDay
+import com.callbook.journal.domain.scoreSession
 import com.callbook.journal.domain.isMarketWeekday
 import com.callbook.journal.domain.shiftTradingDay
 import com.callbook.journal.domain.tradingDay
-import com.callbook.journal.domain.LosersLoad
 import com.callbook.journal.domain.Mark
 import com.callbook.journal.domain.NewsLoad
+import com.callbook.journal.domain.SectorLoad
+import com.callbook.journal.domain.SymbolLoad
 import com.callbook.journal.domain.Prediction
 import com.callbook.journal.domain.ResultKind
 import com.callbook.journal.domain.judgement
@@ -34,6 +40,8 @@ import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.ZoneId
 import kotlinx.coroutines.Dispatchers
+import kotlin.coroutines.coroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -56,10 +64,10 @@ import kotlinx.coroutines.withContext
 
 enum class JournalFilter(val label: String) {
     ALL("All"),
-    OPEN("Not sold"),
+    OPEN("Open"),
     RIGHT("Profit"),
     WRONG("Loss"),
-    BEYOND("Past target"),
+    BEYOND("Beyond target"),
 }
 
 fun JournalFilter.accepts(prediction: Prediction): Boolean {
@@ -92,7 +100,9 @@ class JournalViewModel(
 
     val chartRange: StateFlow<ChartSpan> = chartSpan
 
-    val chart: StateFlow<ChartLoad> = combine(chartQuery, chartSpan) { query, span ->
+    private val forcedChart = MutableStateFlow<Pair<String, ChartLoad>?>(null)
+
+    private val chartBase: StateFlow<ChartLoad> = combine(chartQuery, chartSpan) { query, span ->
         query to span
     }.flatMapLatest { (query, span) ->
         flow {
@@ -114,59 +124,175 @@ class JournalViewModel(
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ChartLoad.Idle)
 
+    val chart: StateFlow<ChartLoad> = combine(chartBase, forcedChart, chartQuery) { base, forced, query ->
+        val held = forced
+        if (held != null && held.first.equals(query, true)) held.second else base
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ChartLoad.Idle)
+
     fun showChart(query: String) {
         val cleaned = query.trim()
         if (cleaned.isEmpty() || cleaned == chartQuery.value) return
         chartReady = false
+        forcedChart.value = null
         shownPrice.value = null
         chartQuery.value = cleaned
     }
 
     fun hideChart() {
         chartReady = false
+        forcedChart.value = null
         shownPrice.value = null
         shownJob?.cancel()
         chartQuery.value = ""
     }
 
-    private val newsQuery = MutableStateFlow("")
-
-    val news: StateFlow<NewsLoad> = newsQuery.flatMapLatest { query ->
-        flow {
-            if (query.isBlank()) {
-                emit(NewsLoad.Idle)
-            } else {
-                emit(NewsLoad.Loading)
-                emit(withContext(Dispatchers.IO) { PublicQuotes.headlines(query) })
-            }
-        }
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), NewsLoad.Idle)
+    private var newsName = ""
+    private val newsState = MutableStateFlow<NewsLoad>(NewsLoad.Idle)
+    val news: StateFlow<NewsLoad> = newsState
+    private var newsJob: Job? = null
 
     fun showNews(query: String) {
         val cleaned = query.trim()
-        if (cleaned.isEmpty() || cleaned == newsQuery.value) return
-        newsQuery.value = cleaned
+        if (cleaned.isEmpty()) return
+        if (cleaned.equals(newsName, true) && newsState.value is NewsLoad.Ready) return
+        newsName = cleaned
+        newsJob?.cancel()
+        newsJob = viewModelScope.launch {
+            newsState.value = NewsLoad.Loading
+            newsState.value = withContext(Dispatchers.IO) { PublicQuotes.headlines(cleaned) }
+        }
     }
 
     fun hideNews() {
-        newsQuery.value = ""
+        newsJob?.cancel()
+        newsName = ""
+        newsState.value = NewsLoad.Idle
     }
 
-    private val losersState = MutableStateFlow<LosersLoad>(LosersLoad.Idle)
-    val losers: StateFlow<LosersLoad> = losersState
-    private var losersJob: Job? = null
+    /** Prices on Today, Stocks, and Money. Leaves the lists on screen. */
+    suspend fun refreshJournal() {
+        if (livePrices.value) {
+            val names = openNames(load.value)
+            if (names.isNotEmpty()) {
+                val next = pricesFor(names, allowCache = false)
+                if (livePrices.value) {
+                    val keep = names.toSet()
+                    spotPrices.value = spotPrices.value.filterKeys { it in keep } + next
+                    pricedAt = System.currentTimeMillis()
+                }
+            }
+        }
+        val symbols = (load.value as? JournalLoad.Ready)?.predictions?.map { it.symbol }.orEmpty()
+        if (symbols.isEmpty()) return
+        val reads = withContext(Dispatchers.IO) { PublicQuotes.listedReads(symbols) }
+        capBadgeState.value = reads.filterValues { showsCapBadge(it.suggestion) }.mapValues { it.value.cap }
+    }
 
-    fun loadLosers(fresh: Boolean = false) {
-        if (losersJob?.isActive == true && !fresh) return
-        losersJob?.cancel()
-        losersJob = viewModelScope.launch {
-            if (losersState.value !is LosersLoad.Ready) losersState.value = LosersLoad.Loading
-            losersState.value = withContext(Dispatchers.IO) { PublicQuotes.dayLosers(fresh) }
+    /** Sector moves and the Indian headlines, ignoring the saved copy. */
+    suspend fun refreshSectors() {
+        sectorJob?.cancel()
+        sectorState.value = withContext(Dispatchers.IO) { PublicQuotes.sectors(fresh = true) }
+    }
+
+    /** The open strategy list, with new headlines. */
+    suspend fun refreshBoard(cap: CapSize, dips: Boolean) {
+        val key = "${cap.name}:$dips"
+        boardJobs[key]?.cancel()
+        reloadBoard(cap, dips, fresh = true)
+    }
+
+    /** The typed strategy name, with new headlines. */
+    suspend fun refreshSymbol(symbol: String) {
+        symbolJob?.cancel()
+        val name = symbol.trim()
+        if (name.isEmpty()) {
+            symbolState.value = SymbolLoad.Idle
+            return
+        }
+        if (symbolState.value !is SymbolLoad.Ready) symbolState.value = SymbolLoad.Loading
+        val result = withContext(Dispatchers.IO) {
+            runCatching { PublicQuotes.checkSymbol(name) }.getOrNull()
+        }
+        coroutineContext.ensureActive()
+        if (result == null) {
+            symbolState.value = SymbolLoad.Unavailable("No quote for this name")
+            return
+        }
+        symbolState.value = SymbolLoad.Ready(result)
+        rememberBuys(listOf(result.check))
+    }
+
+    /** The open stock page: its news, and the chart when that is open. */
+    suspend fun refreshDetail(symbol: String) {
+        val name = symbol.trim()
+        coroutineScope {
+            val headlines = async(Dispatchers.IO) {
+                if (name.isEmpty()) null else PublicQuotes.headlines(name, maxAgeMs = 0)
+            }
+            val chartWork = async {
+                val query = chartQuery.value
+                if (query.isBlank()) return@async
+                val next = withContext(Dispatchers.IO) { loadNamed(query, chartSpan.value) }
+                if (chartQuery.value == query) forcedChart.value = query to next
+            }
+            val priceWork = async {
+                val query = chartQuery.value
+                if (query.isBlank()) return@async
+                val quote = withContext(Dispatchers.IO) {
+                    PublicQuotes.spot(query, tickers.get(query), allowCache = false)
+                } ?: return@async
+                if (chartQuery.value != query) return@async
+                tickers.save(query, quote.symbol)
+                shownPrice.value = query to quote.price
+            }
+            val loaded = headlines.await()
+            if (loaded != null && newsName.equals(name, true)) newsState.value = loaded
+            chartWork.await()
+            priceWork.await()
+        }
+    }
+
+    private val sectorState = MutableStateFlow<SectorLoad>(SectorLoad.Idle)
+    val sectors: StateFlow<SectorLoad> = sectorState
+    private var sectorJob: Job? = null
+
+    fun loadSectors(fresh: Boolean = false) {
+        if (sectorJob?.isActive == true && !fresh) return
+        sectorJob?.cancel()
+        sectorJob = viewModelScope.launch {
+            if (sectorState.value !is SectorLoad.Ready) sectorState.value = SectorLoad.Loading
+            sectorState.value = withContext(Dispatchers.IO) { PublicQuotes.sectors(fresh) }
         }
     }
 
     private val dipsState = MutableStateFlow<DipLoad>(DipLoad.Idle)
     val dips: StateFlow<DipLoad> = dipsState
+    private val symbolState = MutableStateFlow<SymbolLoad>(SymbolLoad.Idle)
+    val symbolCheck: StateFlow<SymbolLoad> = symbolState
+    private var symbolJob: Job? = null
+
+    /** One typed name, through the same buy, wait, or skip check as the list. */
+    fun checkStock(symbol: String) {
+        val name = symbol.trim()
+        if (name.isEmpty()) {
+            symbolState.value = SymbolLoad.Idle
+            return
+        }
+        symbolJob?.cancel()
+        symbolJob = viewModelScope.launch {
+            symbolState.value = SymbolLoad.Loading
+            val result = withContext(Dispatchers.IO) {
+                runCatching { PublicQuotes.checkSymbol(name) }.getOrNull()
+            }
+            if (!isActive) return@launch
+            if (result == null) {
+                symbolState.value = SymbolLoad.Unavailable("No quote for this name")
+                return@launch
+            }
+            symbolState.value = SymbolLoad.Ready(result)
+            rememberBuys(listOf(result.check))
+        }
+    }
     private val boardJobs = mutableMapOf<String, Job>()
     private val boardLock = Mutex()
 
@@ -184,42 +310,59 @@ class JournalViewModel(
         val running = boardJobs[key]
         if (running?.isActive == true && !fresh) return
         running?.cancel()
-        boardJobs[key] = viewModelScope.launch {
-            if (dipsState.value !is DipLoad.Ready) dipsState.value = DipLoad.Loading
-            val slice = withContext(Dispatchers.IO) {
-                runCatching { PublicQuotes.scanBoard(cap, dips, fresh) }.getOrNull()
+        boardJobs[key] = viewModelScope.launch { reloadBoard(cap, dips, fresh) }
+    }
+
+    private suspend fun reloadBoard(cap: CapSize, dips: Boolean, fresh: Boolean) {
+        if (dipsState.value !is DipLoad.Ready) dipsState.value = DipLoad.Loading
+        val slice = withContext(Dispatchers.IO) {
+            runCatching { PublicQuotes.scanBoard(cap, dips, fresh) }.getOrNull()
+        }
+        coroutineContext.ensureActive()
+        if (slice == null) {
+            if (dipsState.value !is DipLoad.Ready) {
+                dipsState.value = DipLoad.Unavailable("This list is offline")
             }
-            if (!isActive) return@launch
-            if (slice == null) {
-                if (dipsState.value !is DipLoad.Ready) {
-                    dipsState.value = DipLoad.Unavailable("This list is offline")
-                }
-                return@launch
+            return
+        }
+        boardLock.withLock {
+            coroutineContext.ensureActive()
+            val ready = dipsState.value as? DipLoad.Ready
+            val boards = ready?.boards.orEmpty().toMutableMap()
+            val previous = boards[cap]
+            boards[cap] = if (dips) {
+                CapDips(
+                    marketPercent = slice.marketPercent,
+                    dips = slice.checks,
+                    pauses = previous?.pauses.orEmpty(),
+                    dipsLoaded = true,
+                    pausesLoaded = previous?.pausesLoaded == true,
+                )
+            } else {
+                CapDips(
+                    marketPercent = slice.marketPercent,
+                    dips = previous?.dips.orEmpty(),
+                    pauses = slice.checks,
+                    dipsLoaded = previous?.dipsLoaded == true,
+                    pausesLoaded = true,
+                )
             }
-            boardLock.withLock {
-                if (!isActive) return@withLock
-                val ready = dipsState.value as? DipLoad.Ready
-                val boards = ready?.boards.orEmpty().toMutableMap()
-                val previous = boards[cap]
-                boards[cap] = if (dips) {
-                    CapDips(
-                        marketPercent = slice.marketPercent,
-                        dips = slice.checks,
-                        pauses = previous?.pauses.orEmpty(),
-                        dipsLoaded = true,
-                        pausesLoaded = previous?.pausesLoaded == true,
-                    )
-                } else {
-                    CapDips(
-                        marketPercent = slice.marketPercent,
-                        dips = previous?.dips.orEmpty(),
-                        pauses = slice.checks,
-                        dipsLoaded = previous?.dipsLoaded == true,
-                        pausesLoaded = true,
-                    )
-                }
-                val asOf = slice.asOf.ifBlank { ready?.asOf.orEmpty() }
-                dipsState.value = DipLoad.Ready(asOf, boards)
+            val asOf = slice.asOf.ifBlank { ready?.asOf.orEmpty() }
+            dipsState.value = DipLoad.Ready(asOf, boards)
+        }
+        rememberBuys(slice.checks)
+    }
+
+    /** The first time a name is a buy today, keep its limit, stop, and target. */
+    private fun rememberBuys(checks: List<DipCheck>) {
+        val day = tradingDay(LocalDate.now(ZoneId.of("Asia/Kolkata"))).toEpochDay()
+        val buys = checks.filter {
+            it.suggestion == DipSuggestion.BUY && it.limitPrice > 0.0 && it.stopPrice > 0.0 && it.targetPrice > 0.0
+        }
+        if (buys.isEmpty()) return
+        viewModelScope.launch {
+            buys.forEach { dip ->
+                repository.rememberBuy(dip.symbol, day, dip.limitPrice, dip.stopPrice, dip.targetPrice)
             }
         }
     }
@@ -228,6 +371,7 @@ class JournalViewModel(
         if (span == chartSpan.value) return
         tickers.setChartSpan(span)
         chartReady = false
+        forcedChart.value = null
         chartSpan.value = span
     }
 
@@ -358,6 +502,10 @@ class JournalViewModel(
     /** Large, mid, or small for a name that is not a skip. */
     val capBadges: StateFlow<Map<String, CapSize>> = capBadgeState
 
+    /** Buys the checklist wrote down, including names that were not saved. */
+    val buyScores: StateFlow<List<BuyScore>> = repository.observeScores()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
     init {
         val raw = savedState.get<Long>("day") ?: LocalDate.now().toEpochDay()
         val date = LocalDate.ofEpochDay(raw)
@@ -365,6 +513,7 @@ class JournalViewModel(
         viewModelScope.launch {
             while (isActive) {
                 watchPlans()
+                scoreBuys()
                 delay(60_000)
             }
         }
@@ -393,6 +542,29 @@ class JournalViewModel(
             ) ?: continue
             repository.save(next)
             if (!next.notStarted) free -= next.capital
+        }
+    }
+
+    /** Mark a buy from the session after it was written down. */
+    private suspend fun scoreBuys() {
+        val now = LocalDateTime.now(ZoneId.of("Asia/Kolkata"))
+        val today = now.toLocalDate().toEpochDay()
+        for (buy in repository.unscoredBuys()) {
+            val session = nextSessionDay(buy.epochDay)
+            if (session.toEpochDay() > today) continue
+            val range = withContext(Dispatchers.IO) {
+                PublicQuotes.sessionRange(buy.symbol, session.toEpochDay())
+            } ?: continue
+            val outcome = scoreSession(
+                buy.stopPrice,
+                buy.targetPrice,
+                range.first,
+                range.second,
+                session.toEpochDay(),
+                today,
+                now.toLocalTime(),
+            ) ?: continue
+            repository.setOutcome(buy.id, outcome)
         }
     }
 

@@ -23,7 +23,7 @@ enum class Danger(val label: String) {
 }
 
 enum class DipSuggestion(val label: String) {
-    BUY("Buy the swing"),
+    BUY("Buy"),
     WAIT("Wait"),
     SKIP("Skip"),
 }
@@ -54,9 +54,9 @@ data class DipCheck(
 )
 
 enum class CapSize(val label: String, val index: String) {
-    LARGE("Large", "NIFTY 100"),
-    MID("Mid", "NIFTY MIDCAP 150"),
-    SMALL("Small", "NIFTY SMALLCAP 250"),
+    LARGE("Large cap", "NIFTY 100"),
+    MID("Mid cap", "NIFTY MIDCAP 150"),
+    SMALL("Small cap", "NIFTY SMALLCAP 250"),
 }
 
 /** Where a name sits, and whether the latest check would buy, wait, or skip. */
@@ -82,6 +82,18 @@ sealed interface DipLoad {
         val boards: Map<CapSize, CapDips>,
     ) : DipLoad
     data class Unavailable(val message: String) : DipLoad
+}
+
+data class SymbolCheck(
+    val check: DipCheck,
+    val cap: CapSize?,
+)
+
+sealed interface SymbolLoad {
+    data object Idle : SymbolLoad
+    data object Loading : SymbolLoad
+    data class Ready(val result: SymbolCheck) : SymbolLoad
+    data class Unavailable(val message: String) : SymbolLoad
 }
 
 /** Morning alerts. Ends at 10:00 so the first hour is not spent on the other lists. */

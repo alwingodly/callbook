@@ -7,6 +7,13 @@ import com.callbook.journal.domain.LosersLoad
 import com.callbook.journal.domain.NewsLoad
 import com.callbook.journal.domain.CapDips
 import com.callbook.journal.domain.CapSize
+import com.callbook.journal.domain.Sector
+import com.callbook.journal.domain.SectorLoad
+import com.callbook.journal.domain.SectorRead
+import com.callbook.journal.domain.SectorStock
+import com.callbook.journal.domain.fitsIndianMarket
+import com.callbook.journal.domain.nextSessionLabel
+import com.callbook.journal.domain.sectorOutlook
 import com.callbook.journal.domain.ListedRead
 import com.callbook.journal.domain.PricePrint
 import com.callbook.journal.domain.lowAfterAdded
@@ -14,6 +21,8 @@ import com.callbook.journal.domain.DEEP_DIP_PERCENT
 import com.callbook.journal.domain.DayLoser
 import com.callbook.journal.domain.HeadlineRead
 import com.callbook.journal.domain.LoserBoard
+import com.callbook.journal.domain.IndexQuote
+import com.callbook.journal.domain.SymbolCheck
 import com.callbook.journal.domain.advisePause
 import com.callbook.journal.domain.adviseDip
 import com.callbook.journal.domain.isMildPause
@@ -31,7 +40,10 @@ import com.callbook.journal.domain.readHeadline
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
+import java.time.Instant
+import java.time.LocalDate
 import java.time.OffsetDateTime
+import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -62,6 +74,7 @@ object PublicQuotes {
     private val newsByName = java.util.concurrent.ConcurrentHashMap<String, Pair<Long, NewsLoad.Ready>>()
     private val articleByLink = java.util.concurrent.ConcurrentHashMap<String, String>()
     private var losersCache: Pair<Long, LosersLoad.Ready>? = null
+    private var sectorCache: Pair<Long, SectorLoad.Ready>? = null
     private val indexBodies = java.util.concurrent.ConcurrentHashMap<String, Pair<Long, String>>()
     private var nseCookie: Pair<Long, String>? = null
     private val slowBySymbol = java.util.concurrent.ConcurrentHashMap<String, SlowRead>()
@@ -127,6 +140,36 @@ object PublicQuotes {
         }.getOrNull()
     }
 
+    /** High and low of one session, matched on the India date of the daily bar. */
+    fun sessionRange(symbol: String, epochDay: Long): Pair<Double, Double>? {
+        val name = symbol.trim()
+        if (name.isEmpty()) return null
+        val ticker = when {
+            name.endsWith(".NS", true) || name.endsWith(".BO", true) -> name
+            else -> "$name.NS"
+        }
+        return runCatching {
+            val body = get("https://query1.finance.yahoo.com/v8/finance/chart/$ticker?interval=1d&range=10d")
+            val result = JSONObject(body).getJSONObject("chart").getJSONArray("result").getJSONObject(0)
+            val stamps = result.optJSONArray("timestamp") ?: return@runCatching null
+            val quote = result.getJSONObject("indicators").getJSONArray("quote").getJSONObject(0)
+            val highs = quote.optJSONArray("high") ?: return@runCatching null
+            val lows = quote.optJSONArray("low") ?: return@runCatching null
+            val zone = ZoneId.of("Asia/Kolkata")
+            val count = minOf(stamps.length(), highs.length(), lows.length())
+            for (i in count - 1 downTo 0) {
+                val stamp = stamps.optLong(i)
+                if (stamp <= 0L) continue
+                val day = Instant.ofEpochSecond(stamp).atZone(zone).toLocalDate().toEpochDay()
+                if (day != epochDay) continue
+                val high = highs.numberAt(i) ?: continue
+                val low = lows.numberAt(i) ?: continue
+                if (high > 0.0 && low > 0.0) return@runCatching low to high
+            }
+            null
+        }.getOrNull()
+    }
+
     fun sessionLow(symbol: String): Double? {
         val name = symbol.trim()
         if (name.isEmpty()) return null
@@ -156,17 +199,42 @@ object PublicQuotes {
                 .filter { it.changePercent <= DEEP_DIP_PERCENT }
                 .sortedBy { it.changePercent }
                 .take(4)
-                .parallelMap { quote -> adviseOne(quote, market) }
+                .parallelMap { quote -> adviseOne(quote, market, fresh) }
         } else {
             quotes
                 .filter { isMildPause(it.changePercent, it.monthChange) }
                 .sortedByDescending { it.monthChange }
                 .take(6)
-                .parallelMap { quote -> advisePauseQuote(quote, market) }
+                .parallelMap { quote -> advisePauseQuote(quote, market, fresh) }
                 .filterNotNull()
                 .take(4)
         }
         return StrategySlice(indexTimestamp(body), market, checks)
+    }
+
+    /**
+     * The same checklist as the strategy list, for one typed symbol.
+     * A name in a cap index uses that index. Anything else uses the NSE quote.
+     */
+    fun checkSymbol(symbol: String, allowSearch: Boolean = true): SymbolCheck? {
+        val key = symbol.trim().uppercase().removeSuffix(".NS").removeSuffix(".BO").trim()
+        if (key.isEmpty() || key.any { it.isWhitespace() }) return null
+        val cookies = cachedCookies()
+        for (cap in CapSize.entries) {
+            val body = cachedIndex(cap, cookies, fresh = false) ?: continue
+            val quote = parseIndexQuotes(body).firstOrNull { it.symbol.equals(key, true) } ?: continue
+            return SymbolCheck(adviseOne(quote, parseIndexMove(body) ?: 0.0, fresh = true), cap)
+        }
+        val quote = equityQuote(key, cookies)
+        if (quote != null) {
+            val market = indexJson("NIFTY 100", cookies, fresh = false)?.let { parseIndexMove(it) } ?: 0.0
+            return SymbolCheck(adviseOne(quote, market, fresh = true), null)
+        }
+        if (!allowSearch) return null
+        val listed = runCatching { find(key) }.getOrNull() ?: return null
+        val ticker = listed.symbol.removeSuffix(".NS").removeSuffix(".BO")
+        if (ticker.equals(key, true)) return null
+        return checkSymbol(ticker, allowSearch = false)
     }
 
     /**
@@ -194,6 +262,53 @@ object PublicQuotes {
         }.toMap()
     }
 
+    /** Sector moves, the names inside them, and which ones look risky next session. */
+    fun sectors(fresh: Boolean = false): SectorLoad {
+        val cached = sectorCache
+        val now = System.currentTimeMillis()
+        if (!fresh && cached != null && now - cached.first < 120_000L) return cached.second
+        val loaded = runCatching { fetchSectors(fresh) }.getOrElse {
+            SectorLoad.Unavailable("Sectors are offline")
+        }
+        if (loaded is SectorLoad.Ready) sectorCache = System.currentTimeMillis() to loaded
+        return loaded
+    }
+
+    private fun fetchSectors(fresh: Boolean): SectorLoad {
+        val cookies = cachedCookies()
+        val caps = capMap(cookies, fresh)
+        var asOf = ""
+        val prepared = Sector.entries.mapNotNull { sector ->
+            val body = indexJson(sector.index, cookies, fresh) ?: return@mapNotNull null
+            val move = parseIndexMove(body) ?: return@mapNotNull null
+            if (asOf.isBlank()) asOf = indexTimestamp(body)
+            val stocks = parseIndexQuotes(body).map { quote ->
+                SectorStock(quote.symbol, quote.changePercent, caps[quote.symbol.uppercase()])
+            }.sortedBy { it.changePercent }
+            Triple(sector, move, stocks)
+        }
+        if (prepared.isEmpty()) return SectorLoad.Unavailable("Sectors are offline")
+        val session = nextSessionLabel(LocalDate.now(ZoneId.of("Asia/Kolkata")))
+        val reads = prepared.parallelMap { (sector, move, stocks) ->
+            val news = headlines(sector.newsQuery, maxAgeMs = if (fresh) 0L else 600_000L, recentDays = 3)
+            val items = (news as? NewsLoad.Ready)?.items.orEmpty().filter { fitsIndianMarket(it.title) }
+            SectorRead(sector, move, stocks, sectorOutlook(move, items, session), items)
+        }
+        return SectorLoad.Ready(asOf, reads)
+    }
+
+    private fun capMap(cookies: String, fresh: Boolean): Map<String, CapSize> {
+        val caps = linkedMapOf<String, CapSize>()
+        CapSize.entries.forEach { cap ->
+            val body = indexJson(cap.index, cookies, fresh) ?: return@forEach
+            parseIndexQuotes(body).forEach { quote ->
+                val key = quote.symbol.uppercase()
+                if (key !in caps) caps[key] = cap
+            }
+        }
+        return caps
+    }
+
     /** Today's NSE losers. Cached for two minutes. One response holds every board. */
     fun dayLosers(fresh: Boolean = false): LosersLoad {
         val cached = losersCache
@@ -207,13 +322,13 @@ object PublicQuotes {
     }
 
     /** A few recent headlines. The stock page keeps them for ten minutes. Strategy asks sooner. */
-    fun headlines(query: String, maxAgeMs: Long = 600_000L): NewsLoad {
+    fun headlines(query: String, maxAgeMs: Long = 600_000L, recentDays: Int = 14): NewsLoad {
         val name = query.trim()
         if (name.isEmpty()) return NewsLoad.Unavailable("Type a stock name")
-        val key = name.uppercase()
+        val key = "${name.uppercase()}|$recentDays"
         val cached = newsByName[key]
         if (cached != null && System.currentTimeMillis() - cached.first < maxAgeMs) return cached.second
-        val loaded = runCatching { fetchHeadlines(name) }.getOrElse {
+        val loaded = runCatching { fetchHeadlines(name, recentDays) }.getOrElse {
             NewsLoad.Unavailable("News is offline")
         }
         if (loaded is NewsLoad.Ready) newsByName[key] = System.currentTimeMillis() to loaded
@@ -418,13 +533,16 @@ object PublicQuotes {
         return value
     }
 
-    private fun cachedIndex(cap: CapSize, cookies: String, fresh: Boolean): String? {
-        val hit = indexBodies[cap.index]
+    private fun cachedIndex(cap: CapSize, cookies: String, fresh: Boolean): String? =
+        indexJson(cap.index, cookies, fresh)
+
+    private fun indexJson(index: String, cookies: String, fresh: Boolean): String? {
+        val hit = indexBodies[index]
         val now = System.currentTimeMillis()
         if (!fresh && hit != null && now - hit.first < INDEX_FRESH_MS) return hit.second
-        val body = runCatching { indexBody(cap.index, cookies) }.getOrNull()
+        val body = runCatching { indexBody(index, cookies) }.getOrNull()
         if (body != null) {
-            indexBodies[cap.index] = now to body
+            indexBodies[index] = now to body
             return body
         }
         return hit?.second
@@ -433,8 +551,9 @@ object PublicQuotes {
     private fun advisePauseQuote(
         quote: com.callbook.journal.domain.IndexQuote,
         market: Double,
+        fresh: Boolean = false,
     ): com.callbook.journal.domain.DipCheck? {
-        val slow = slowFor(quote.symbol) ?: return null
+        val slow = slowFor(quote.symbol, fresh) ?: return null
         if (!risingPause(slow.lows, slow.closes)) return null
         val stories = slow.stories
         val reads: List<HeadlineRead> = stories.map { it.read }
@@ -454,13 +573,13 @@ object PublicQuotes {
     }
 
     /** Week candles and headlines stay for two minutes. The NSE price is read on every pass. */
-    private fun slowFor(symbol: String): SlowRead? {
+    private fun slowFor(symbol: String, fresh: Boolean = false): SlowRead? {
         val key = symbol.uppercase()
         val hit = slowBySymbol[key]
         val now = System.currentTimeMillis()
-        if (hit != null && now - hit.at < SLOW_FRESH_MS) return hit
+        if (!fresh && hit != null && now - hit.at < SLOW_FRESH_MS) return hit
         val bars = runCatching { series("$symbol.NS", "5d", 6).candles }.getOrNull() ?: return hit
-        val news = runCatching { headlines(symbol, STRATEGY_NEWS_MS) }.getOrNull()
+        val news = runCatching { headlines(symbol, if (fresh) 0L else STRATEGY_NEWS_MS) }.getOrNull()
         val stories = (news as? NewsLoad.Ready)?.items.orEmpty()
         val read = SlowRead(
             closes = bars.map { it.close },
@@ -476,8 +595,9 @@ object PublicQuotes {
     private fun adviseOne(
         quote: com.callbook.journal.domain.IndexQuote,
         market: Double,
+        fresh: Boolean = false,
     ): com.callbook.journal.domain.DipCheck {
-        val slow = slowFor(quote.symbol)
+        val slow = slowFor(quote.symbol, fresh)
         val closes = slow?.closes.orEmpty()
         val stories = slow?.stories.orEmpty()
         val reads: List<HeadlineRead> = stories.map { it.read }
@@ -493,6 +613,42 @@ object PublicQuotes {
             stories = stories,
             monthChange = quote.monthChange,
         )
+    }
+
+    private fun equityQuote(symbol: String, cookies: String): IndexQuote? {
+        val body = runCatching {
+            val name = URLEncoder.encode(symbol, Charsets.UTF_8.name())
+            get(
+                url = "https://www.nseindia.com/api/quote-equity?symbol=$name",
+                accept = "application/json",
+                referer = "https://www.nseindia.com/",
+                cookie = cookies,
+            )
+        }.getOrNull() ?: return null
+        val price = runCatching { JSONObject(body).optJSONObject("priceInfo") }.getOrNull() ?: return null
+        val last = price.optDouble("lastPrice")
+        val change = price.optDouble("pChange")
+        if (!last.isFinite() || last <= 0.0 || !change.isFinite()) return null
+        val range = price.optJSONObject("intraDayHighLow")
+        val low = range?.optDouble("min") ?: 0.0
+        val high = range?.optDouble("max") ?: 0.0
+        val previous = price.optDouble("previousClose")
+        return IndexQuote(
+            symbol = symbol,
+            price = last,
+            changePercent = change,
+            previousClose = if (previous.isFinite()) previous else 0.0,
+            dayLow = if (low.isFinite()) low else 0.0,
+            dayHigh = if (high.isFinite()) high else 0.0,
+            monthChange = monthMove(symbol),
+        )
+    }
+
+    private fun monthMove(symbol: String): Double {
+        val candles = runCatching { series("$symbol.NS", "1mo", 23).candles }.getOrNull().orEmpty()
+        val first = candles.firstOrNull { it.close > 0.0 }?.close ?: return 0.0
+        val last = candles.lastOrNull { it.close > 0.0 }?.close ?: return 0.0
+        return (last - first) / first * 100.0
     }
 
     private fun indexBody(index: String, cookies: String): String {
@@ -525,10 +681,10 @@ object PublicQuotes {
         }
     }
 
-    private fun fetchHeadlines(name: String): NewsLoad {
-        val q = URLEncoder.encode("$name when:14d", Charsets.UTF_8.name())
+    private fun fetchHeadlines(name: String, recentDays: Int = 14): NewsLoad {
+        val q = URLEncoder.encode("$name when:${recentDays}d", Charsets.UTF_8.name())
         val body = get("https://news.google.com/rss/search?q=$q&hl=en-IN&gl=IN&ceid=IN:en")
-        val items = parseNewsRss(body).take(6)
+        val items = parseNewsRss(body).take(if (recentDays <= 3) 8 else 6)
         if (items.isEmpty()) return NewsLoad.Unavailable("No news for this name")
         return NewsLoad.Ready(items)
     }

@@ -53,8 +53,8 @@ fun CallCard(
         if (cap != null) append(cap.label).append(" · ")
         append(if (prediction.segment == Segment.DELIVERY) "Delivery" else "Intraday")
         if (marked != null && marked.quantity > 0) append(" · ${marked.quantity} shares")
-        if (prediction.notStarted && !withdrawn) append(" · Not started")
-        else if (withdrawn) append(" · Withdrawn") else if (marked == null) append(" · Not sold")
+        if (prediction.notStarted && !withdrawn) append(" · Planned")
+        else if (withdrawn) append(" · Closed") else if (marked == null) append(" · Open")
         if (!withdrawn) append(age)
     }
     val booked = prediction.boughtResult()?.netPnl
@@ -117,7 +117,7 @@ fun CallCard(
                     val tax = prediction.taxCutting()
                     if (tax > 0.5) {
                         Text(
-                            text = "Tax ${rupees(tax)}",
+                            text = "STCG ${rupees(tax)}",
                             color = Mist,
                             fontSize = 12.sp,
                             textAlign = TextAlign.End,

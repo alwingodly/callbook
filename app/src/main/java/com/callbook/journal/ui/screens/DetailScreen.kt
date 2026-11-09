@@ -54,6 +54,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.runtime.rememberCoroutineScope
 import com.callbook.journal.domain.StockHeadline
+import com.callbook.journal.ui.components.LiveRefresh
 import com.callbook.journal.ui.openArticle
 import com.callbook.journal.domain.ChartLoad
 import com.callbook.journal.domain.ChartSpan
@@ -119,6 +120,7 @@ fun DetailScreen(
     onSaveOutcome: (actualPrice: Double?, mark: Mark?, manualPnl: Double?) -> Unit,
     onReopen: () -> Unit,
     onDelete: () -> Unit,
+    onRefresh: suspend () -> Unit = {},
 ) {
     var confirmDelete by remember { mutableStateOf(false) }
     var chartOn by remember(prediction?.id) { mutableStateOf(false) }
@@ -166,7 +168,11 @@ fun DetailScreen(
                 modifier = Modifier.padding(padding).padding(20.dp),
                 color = Mist,
             )
-            else -> DetailBody(
+            else -> LiveRefresh(
+                onRefresh = onRefresh,
+                modifier = Modifier.fillMaxSize().padding(padding),
+            ) {
+            DetailBody(
                 prediction = prediction,
                 chart = chart,
                 chartRange = chartRange,
@@ -190,10 +196,10 @@ fun DetailScreen(
                 onReopen = onReopen,
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(padding)
                     .verticalScroll(rememberScrollState())
                     .padding(horizontal = 20.dp, vertical = 8.dp),
             )
+            }
         }
     }
     if (confirmDelete) {
@@ -308,13 +314,14 @@ private fun DetailBody(
             val tax = prediction.taxCutting()
             val after = result.netPnl - tax
             Panel {
-                Fact("Profit or loss", rupees(result.netPnl, signed = true))
-                if (prediction.manualPnl == null && result.charges > 0.5) {
-                    Fact("Charges", rupees(result.charges))
+                if (prediction.manualPnl == null) {
+                    Fact("Price move", rupees(result.grossPnl, signed = true))
+                    if (result.charges > 0.5) Fact("Charges", rupees(result.charges))
                 }
-                Fact("Tax", rupees(tax))
-                Fact("After tax", rupees(after, signed = true))
-                Fact("Back in cash", rupees(prediction.capital + after))
+                Fact("Net P&L", rupees(result.netPnl, signed = true))
+                Fact("STCG", rupees(tax))
+                Fact("After STCG", rupees(after, signed = true))
+                Fact("Proceeds", rupees(prediction.capital + after))
             }
         }
         prediction.verdictSentence()?.let { sentence ->
@@ -333,7 +340,7 @@ private fun DetailBody(
                 notice = null
             },
             modifier = Modifier.fillMaxWidth(),
-            label = { Text("Sell price") },
+            label = { Text("Exit price") },
             placeholder = { Text("Optional") },
             singleLine = true,
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
@@ -360,7 +367,7 @@ private fun DetailBody(
                 notice = null
             },
             modifier = Modifier.fillMaxWidth(),
-            label = { Text("Profit or loss") },
+            label = { Text("P&L") },
             placeholder = { Text("Optional, like 850 or -320") },
             singleLine = true,
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
@@ -380,14 +387,14 @@ private fun DetailBody(
             ),
         )
         Text(
-            text = "Leave this blank to use the sell price. A minus is a loss.",
+            text = "Leave this blank to use the exit price. A minus is a loss.",
             color = Faint,
             fontSize = 12.sp,
         )
         error?.let { Text(it, color = Loss, fontSize = 13.sp) }
         notice?.let { Text(it, color = Profit, fontSize = 13.sp) }
         WithdrawButton(
-            title = "Sold in profit",
+            title = "Book profit",
             back = afterTaxBack,
             tax = profitTax.takeIf { it > 0.0 },
             afterTax = afterTaxBack.takeIf { profitTax > 0.0 },
@@ -400,7 +407,7 @@ private fun DetailBody(
             },
         )
         WithdrawButton(
-            title = "Sold at a loss",
+            title = "Book loss",
             back = lossBack?.minus(lossTax),
             tax = lossTax.takeIf { it > 0.0 },
             afterTax = lossBack?.minus(lossTax)?.takeIf { lossTax > 0.0 },
@@ -448,7 +455,7 @@ private fun WithdrawButton(
             }
             if (tax != null && afterTax != null) {
                 Text(
-                    text = "ITR tax ${rupees(tax)}  ·  ${rupees(afterTax)} after tax",
+                    text = "STCG ${rupees(tax)}  ·  ${rupees(afterTax)} after STCG",
                     fontSize = 12.sp,
                 )
             }
